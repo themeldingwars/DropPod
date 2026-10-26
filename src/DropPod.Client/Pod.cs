@@ -10,6 +10,7 @@ using AeroMessages.GSS.Character.Event;
 using AeroMessages.GSS.Generic;
 using AeroMessages.Matrix;
 using DropPod.Client.Net;
+using DropPod.Client.Recording;
 using DropPod.Client.Web;
 using DropPod.Client.World;
 
@@ -49,6 +50,7 @@ public sealed class Pod : IAsyncDisposable
     private readonly byte _forcedMovementId;
 
     private UdpClient? _socket;
+    private IPEndPoint? _local;
     private MatrixSession? _session;
     private Task? _loop;
     private GameClock? _clock;
@@ -98,6 +100,9 @@ public sealed class Pod : IAsyncDisposable
 
     public long DatagramsReceived { get; private set; }
 
+    /// <summary>Set before the drop, the handshake gets recorded too.</summary>
+    public PcapngWriter? Recorder { get; init; }
+
     /// <summary>Drop to EnterZone, drop to the first PlayerReady.</summary>
     public TimeSpan? TimeToZone { get; private set; }
 
@@ -128,7 +133,13 @@ public sealed class Pod : IAsyncDisposable
         var matrix = new IPEndPoint(addresses.First(a => a.AddressFamily == AddressFamily.InterNetwork), ticket.MatrixPort);
 
         _socket = new UdpClient(0, AddressFamily.InterNetwork);
-        _session = await MatrixHandshake.RunAsync(_socket, matrix, _protocol, ct);
+
+        // The socket listens on every address, a recording needs one: the loopback for a local server
+        var localPort = ((IPEndPoint)_socket.Client.LocalEndPoint!).Port;
+        _local = new IPEndPoint(IPAddress.IsLoopback(matrix.Address) ? IPAddress.Loopback : IPAddress.Any, localPort);
+
+        _session = await MatrixHandshake.RunAsync(_socket, matrix, _protocol, ct,
+            (datagram, fromServer) => Recorder?.Write(DateTime.UtcNow, fromServer ? matrix : _local, fromServer ? _local : matrix, datagram));
         Log?.Invoke(this, $"socket {_session.SocketId:x8}, game server {_session.GameServer}");
 
         // Every sequenced channel starts at the HUGG's sequence number, the server's and the client's alike
@@ -187,7 +198,9 @@ public sealed class Pod : IAsyncDisposable
                 var wait = Task.Delay(_timings.Tick, ct);
                 if (await Task.WhenAny(receive, wait) == receive)
                 {
-                    HandleDatagram(receive.Result.Buffer, DateTime.UtcNow);
+                    var now = DateTime.UtcNow;
+                    Recorder?.Write(now, receive.Result.RemoteEndPoint, _local!, receive.Result.Buffer);
+                    HandleDatagram(receive.Result.Buffer, now);
                     receive = _socket.ReceiveAsync(ct).AsTask();
                 }
 
@@ -471,6 +484,8 @@ public sealed class Pod : IAsyncDisposable
         foreach (var datagram in _outbox.TakeDatagrams(_session!.SocketId))
         {
             await _socket!.SendAsync(datagram, _session.GameServer, ct);
+            var now = DateTime.UtcNow;
+            Recorder?.Write(now, _local!, _session.GameServer, datagram);
             DatagramsSent++;
             _bytesUp += datagram.Length;
         }

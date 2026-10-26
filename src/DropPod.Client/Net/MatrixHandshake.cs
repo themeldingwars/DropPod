@@ -90,26 +90,30 @@ public static class MatrixHandshake
         return true;
     }
 
-    /// <summary>The game server is on the Matrix server's host, at the port HUGG names.</summary>
-    public static async Task<MatrixSession> RunAsync(UdpClient socket, IPEndPoint matrix, ClientProtocol protocol, CancellationToken ct)
+    /// <summary>
+    /// The game server is on the Matrix server's host, at the port HUGG names. <paramref name="record"/> sees every
+    /// datagram, true for the ones from the server.
+    /// </summary>
+    public static async Task<MatrixSession> RunAsync(UdpClient socket, IPEndPoint matrix, ClientProtocol protocol, CancellationToken ct, Action<byte[], bool>? record = null)
     {
-        var hehe = (await ExchangeAsync(socket, matrix, Poke(protocol.RawMatrix), "HEHE", ct)).Buffer;
+        var hehe = (await ExchangeAsync(socket, matrix, Poke(protocol.RawMatrix), "HEHE", record, ct)).Buffer;
         if (!TryReadHehe(hehe, out var id))
         {
             throw new MatrixHandshakeException("HEHE without a socket id");
         }
 
-        var hugg = (await ExchangeAsync(socket, matrix, Kiss(id, protocol.RawGss), "HUGG", ct)).Buffer;
+        var hugg = (await ExchangeAsync(socket, matrix, Kiss(id, protocol.RawGss), "HUGG", record, ct)).Buffer;
         TryReadHugg(hugg, out var sequenceStart, out var port);
 
         return new MatrixSession(id, new IPEndPoint(matrix.Address, port), sequenceStart);
     }
 
-    private static async Task<UdpReceiveResult> ExchangeAsync(UdpClient socket, IPEndPoint matrix, byte[] request, string expected, CancellationToken ct)
+    private static async Task<UdpReceiveResult> ExchangeAsync(UdpClient socket, IPEndPoint matrix, byte[] request, string expected, Action<byte[], bool>? record, CancellationToken ct)
     {
         foreach (var wait in PokeRetries)
         {
             await socket.SendAsync(request, matrix, ct);
+            record?.Invoke(request, false);
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(wait);
@@ -118,6 +122,7 @@ public static class MatrixHandshake
                 while (true)
                 {
                     var result = await socket.ReceiveAsync(timeout.Token);
+                    record?.Invoke(result.Buffer, true);
                     var type = ReadType(result.Buffer);
                     if (type == expected)
                     {

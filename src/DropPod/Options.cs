@@ -8,7 +8,8 @@ internal sealed record Options(
     int Pods,
     int First,
     TimeSpan Duration,
-    bool AcceptAnyCertificate)
+    bool AcceptAnyCertificate,
+    bool Record)
 {
     public const string Usage = """
         droppod <command> [options]
@@ -23,6 +24,7 @@ internal sealed record Options(
           --first <n>        Number of the first pod, to split pods across runs (default 1)
           --seconds <n>      How long dropped pods stay connected (default 30)
           --insecure         Accept any TLS certificate (on by default for localhost)
+          --record           drop: record every pod as a pcapng in runs/<timestamp>
         """;
 
     public static Options? Parse(string[] args, out string? error)
@@ -39,6 +41,7 @@ internal sealed record Options(
         var first = 1;
         var seconds = 30;
         bool? insecure = null;
+        var record = false;
 
         for (var i = 1; i < args.Length; i++)
         {
@@ -63,6 +66,9 @@ internal sealed record Options(
                     case "--insecure":
                         insecure = true;
                         break;
+                    case "--record":
+                        record = true;
+                        break;
                     default:
                         error = $"Unknown option {args[i]}";
                         return null;
@@ -76,6 +82,6 @@ internal sealed record Options(
         }
 
         var acceptAny = insecure ?? operatorHost.IsLoopback;
-        return new Options(command, operatorHost, pods, first, TimeSpan.FromSeconds(seconds), acceptAny);
+        return new Options(command, operatorHost, pods, first, TimeSpan.FromSeconds(seconds), acceptAny, record);
     }
 }

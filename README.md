@@ -36,6 +36,8 @@ Logs the pods in, lets them enter the zone and keeps them in the world, standing
 
 Every 30 seconds it prints how many pods are in which state. At the end there's a line per pod with how long it took to get into the world, the entities it knows of, gaps on the reliable channels, resends and the round trip. The exit code is 1, if a pod failed or the server closed its connection.
 
+With `--record`, every pod's connection gets written into `runs/<timestamp>/` as `DropPod001.pcapng` and so on, the handshake included. It opens like any other capture, e.g. in Wireshark, and can be put next to a capture of the real client. Note that this adds up quickly, it's roughly 0.8 MB per pod and 90 seconds.
+
 ### Options
 
 - `--operator <url>`: the operator host, what the client has as `OperatorHost` (default `https://localhost:5001`)
@@ -43,3 +45,4 @@ Every 30 seconds it prints how many pods are in which state. At the end there's 
 - `--first <n>`: the number of the first pod, to split the pods over several runs (default 1)
 - `--seconds <n>`: how long `drop` keeps the pods around (default 30)
 - `--insecure`: accept any TLS certificate, on by default for `localhost`, since local stacks run on a development certificate
+- `--record`: write a pcapng per pod into `runs/<timestamp>/` (`drop` only)

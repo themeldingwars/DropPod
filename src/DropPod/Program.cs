@@ -3,6 +3,7 @@ using System.Text;
 using DropPod;
 using DropPod.Client;
 using DropPod.Client.Net;
+using DropPod.Client.Recording;
 using DropPod.Client.Web;
 
 var options = Options.Parse(args, out var error);
@@ -80,7 +81,9 @@ static async Task<int> SeedAsync(RinClient rin, Options options, CancellationTok
 static async Task<int> DropAsync(RinClient rin, Options options, CancellationToken ct)
 {
     var started = DateTime.UtcNow;
+    var folder = options.Record ? RecordingFolder(started) : null;
     var pods = new List<Pod>();
+    var recorders = new List<PcapngWriter>();
     try
     {
         for (var number = options.First; number < options.First + options.Pods; number++)
@@ -92,7 +95,15 @@ static async Task<int> DropAsync(RinClient rin, Options options, CancellationTok
             var character = characters.FirstOrDefault(c => c.IsActive)
                 ?? throw new InvalidOperationException($"{account.Email} has no character, run seed first");
 
-            var pod = new Pod(PodAccounts.CharacterName(number), account, character.CharacterGuid, ClientProtocol.Build1962);
+            var name = PodAccounts.CharacterName(number);
+            PcapngWriter? recorder = null;
+            if (folder != null)
+            {
+                recorder = new PcapngWriter(Path.Combine(folder, $"{name}.pcapng"));
+                recorders.Add(recorder);
+            }
+
+            var pod = new Pod(name, account, character.CharacterGuid, ClientProtocol.Build1962) { Recorder = recorder };
             pod.Log += (p, message) => Console.WriteLine($"[{p.Name}] {message}");
             pods.Add(pod);
 
@@ -118,6 +129,17 @@ static async Task<int> DropAsync(RinClient rin, Options options, CancellationTok
         foreach (var pod in pods)
         {
             await pod.DisposeAsync();
+        }
+
+        // After the pods, so their CloseConnection is in the recording too
+        foreach (var recorder in recorders)
+        {
+            recorder.Dispose();
+        }
+
+        if (folder != null)
+        {
+            Console.WriteLine($"Recordings in {folder}");
         }
     }
 
@@ -167,6 +189,13 @@ static string Summary(Pod pod)
     }
 
     return text.ToString();
+}
+
+static string RecordingFolder(DateTime started)
+{
+    var folder = Path.Combine("runs", started.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture));
+    Directory.CreateDirectory(folder);
+    return folder;
 }
 
 static string Seconds(TimeSpan? time) => time is { } t ? $"{t.TotalSeconds:F1} s" : "-";
