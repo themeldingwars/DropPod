@@ -198,9 +198,10 @@ public sealed class Pod : IAsyncDisposable
                 var wait = Task.Delay(_timings.Tick, ct);
                 if (await Task.WhenAny(receive, wait) == receive)
                 {
+                    var result = await receive;
                     var now = DateTime.UtcNow;
-                    Recorder?.Write(now, receive.Result.RemoteEndPoint, _local!, receive.Result.Buffer);
-                    HandleDatagram(receive.Result.Buffer, now);
+                    Recorder?.Write(now, result.RemoteEndPoint, _local!, result.Buffer);
+                    HandleDatagram(result.Buffer, now);
                     receive = _socket.ReceiveAsync(ct).AsTask();
                 }
 
