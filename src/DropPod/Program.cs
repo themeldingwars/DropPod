@@ -103,9 +103,8 @@ static async Task<int> DropAsync(RinClient rin, Options options, CancellationTok
     {
         foreach (var pod in pods)
         {
-            var received = string.Join(", ", pod.Received.OrderBy(r => r.Key).Select(r => $"{r.Key} {r.Value}"));
             var closed = pod.ServerShutdownCode is { } code ? $", closed by the server ({code})" : string.Empty;
-            Console.WriteLine($"{pod.Name} socket {pod.SocketId:x8}: {received}{closed}");
+            Console.WriteLine($"{pod.Name} socket {pod.SocketId:x8}: {pod.State} in zone {pod.ZoneId}, {pod.World.Entities} entities{closed}");
             await pod.DisposeAsync();
         }
     }

@@ -32,7 +32,7 @@ Creates the accounts `droppod001@droppod.local` to `droppod200@droppod.local`, e
 droppod drop --pods 10 --seconds 600
 ```
 
-Logs the pods in and connects them to the game server, then prints for every pod what the server sent it. For now the pods don't get further than the Login, so they never show up in the world.
+Logs the pods in, lets them enter the zone and keeps them in the world, standing around like an idle player. They send what the 1962 client sent while standing still: movement and update requests 20 times a second, a status every second and a time sync every 2 seconds. At the end it prints a line per pod with its state, zone and how many entities it knows of.
 
 ### Options
 

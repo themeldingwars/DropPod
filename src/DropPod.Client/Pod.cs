@@ -1,47 +1,81 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Numerics;
+using Aero.Gen;
 using Aero.Protocol;
+using AeroMessages.GSS.Character;
+using AeroMessages.GSS.Character.Command;
+using AeroMessages.GSS.Character.Event;
+using AeroMessages.GSS.Generic;
+using AeroMessages.Matrix;
 using DropPod.Client.Net;
 using DropPod.Client.Web;
+using DropPod.Client.World;
 
 namespace DropPod.Client;
 
+public enum PodState
+{
+    Created,
+    LoggingIn,
+    LoadingZone,
+    EnteringWorld,
+    InWorld,
+    Closed,
+}
+
 /// <summary>
-/// One headless client. <see cref="DropAsync"/> takes it from the oracle ticket to the Login on the game server,
-/// then it acks and counts what the server sends.
+/// One headless client. <see cref="DropAsync"/> takes it from the oracle ticket to the Login, then it does what the
+/// 1962 client does standing still: load the zone, ack it, report ready once its character arrived and send its pose
+/// and update requests. Everything runs on one loop, so nothing in here needs a lock.
 /// </summary>
-/// <remarks>It doesn't answer EnterZone yet, so it never gets into the world.</remarks>
 public sealed class Pod : IAsyncDisposable
 {
-    /// <summary>
-    /// The 1962 client sends one once 2 s have passed since both its last request and the last response
-    /// (FUN_00fe8e00).
-    /// </summary>
-    private static readonly TimeSpan TimeSyncInterval = TimeSpan.FromSeconds(2);
-
-    private static readonly TimeSpan TimeSyncCheck = TimeSpan.FromMilliseconds(250);
+    private const short StandingMovementState = 4096; // what the client sent while standing
+    private const ushort FullJetpack = 25500;
+    private const byte InterpolationDelay = 40; // ceil(network.interpolationDelay / 5), the client sent 37 to 44
 
     private readonly ClientProtocol _protocol;
+    private readonly PodTimings _timings;
     private readonly Stopwatch _uptime = Stopwatch.StartNew();
-    private readonly ConcurrentDictionary<string, int> _received = new();
     private readonly CancellationTokenSource _stop = new();
+    private readonly Outbox _outbox = new();
+    private readonly EntityTable _world = new();
+    private readonly Dictionary<Channel, InboundChannel> _inbound = [];
+    private readonly Dictionary<Channel, OutboundChannel> _outbound = [];
+    private readonly byte _baseControllerTypecode;
+    private readonly byte _forcedMovementTypecode;
+    private readonly byte _forcedMovementId;
+
     private UdpClient? _socket;
     private MatrixSession? _session;
-    private Task? _receiveLoop;
-    private Task? _timeSyncLoop;
-    private ushort _matrixSequence;
-    // A day before the pod started reads as "never" without overflowing the subtraction
+    private Task? _loop;
+    private GameClock? _clock;
+    private ulong _instanceId;
+    private DateTime _droppedAt;
+    private DateTime _enterZoneAt;
+    private DateTime _enterZoneAckAt;
+    private DateTime _readyAt;
+    private bool _streamingSent;
     private TimeSpan _lastTimeSyncSent = TimeSpan.FromDays(-1);
     private TimeSpan _lastTimeSyncReceived = TimeSpan.FromDays(-1);
+    private DateTime _lastClientStatus;
+    private DateTime _nextMovement;
+    private DateTime _lastKeyframeRequest;
+    private long _bytesDown;
+    private long _bytesUp;
 
-    public Pod(string name, Red5Credentials account, ulong characterGuid, ClientProtocol protocol)
+    public Pod(string name, Red5Credentials account, ulong characterGuid, ClientProtocol protocol, PodTimings? timings = null)
     {
         Name = name;
         Account = account;
         CharacterGuid = characterGuid;
         _protocol = protocol;
+        _timings = timings ?? new PodTimings();
+
+        GssTables.TryGetWireIds(protocol.Gss, GssCharacterView.BaseController, GssCharacterCommand.PlayerReady, out _baseControllerTypecode, out _);
+        GssTables.TryGetWireIds(protocol.Gss, GssCharacterView.CombatController, GssCharacterMessage.ForcedMovement, out _forcedMovementTypecode, out _forcedMovementId);
     }
 
     public string Name { get; }
@@ -50,41 +84,76 @@ public sealed class Pod : IAsyncDisposable
 
     public ulong CharacterGuid { get; }
 
+    private ulong CharacterEntity => CharacterGuid & 0xffffffffffffff00;
+
+    public PodState State { get; private set; }
+
     public uint SocketId => _session?.SocketId ?? 0;
 
-    /// <summary>Message names (Matrix) and frame counts (GSS), for the run summary.</summary>
-    public IReadOnlyDictionary<string, int> Received => _received;
+    public uint ZoneId { get; private set; }
 
-    /// <summary>Set when the server sent CloseConnection.</summary>
+    public Vector3? Position { get; private set; }
+
+    public long DatagramsSent { get; private set; }
+
+    public long DatagramsReceived { get; private set; }
+
+    /// <summary>Drop to EnterZone, drop to the first PlayerReady.</summary>
+    public TimeSpan? TimeToZone { get; private set; }
+
+    public TimeSpan? TimeToWorld { get; private set; }
+
+    /// <summary>Round trip of the last time sync.</summary>
+    public TimeSpan? RoundTrip { get; private set; }
+
     public uint? ServerShutdownCode { get; private set; }
+
+    public string? Failure { get; private set; }
+
+    public EntityTable World => _world;
+
+    public IReadOnlyDictionary<Channel, InboundChannel> Inbound => _inbound;
+
+    public IReadOnlyDictionary<Channel, OutboundChannel> Outbound => _outbound;
 
     public event Action<Pod, string>? Log;
 
     public async Task DropAsync(RinClient rin, CancellationToken ct)
     {
+        State = PodState.LoggingIn;
+        _droppedAt = DateTime.UtcNow;
+
         var ticket = await rin.GetOracleTicketAsync(Account, CharacterGuid, ct);
         var addresses = await Dns.GetHostAddressesAsync(ticket.MatrixHost, ct);
         var matrix = new IPEndPoint(addresses.First(a => a.AddressFamily == AddressFamily.InterNetwork), ticket.MatrixPort);
 
         _socket = new UdpClient(0, AddressFamily.InterNetwork);
         _session = await MatrixHandshake.RunAsync(_socket, matrix, _protocol, ct);
-        _matrixSequence = _session.MatrixSequenceStart;
         Log?.Invoke(this, $"socket {_session.SocketId:x8}, game server {_session.GameServer}");
 
-        _receiveLoop = ReceiveLoopAsync(_stop.Token);
-        _timeSyncLoop = TimeSyncLoopAsync(_stop.Token);
+        // Every sequenced channel starts at the HUGG's sequence number, the server's and the client's alike
+        foreach (var channel in new[] { Channel.Matrix, Channel.ReliableGss, Channel.UnreliableGss })
+        {
+            _inbound[channel] = new InboundChannel(channel, _session.MatrixSequenceStart);
+            _outbound[channel] = new OutboundChannel(channel, _session.MatrixSequenceStart);
+        }
 
-        await SendTimeSyncAsync(ct);
-        await SendMatrixAsync(MatrixMessages.Login(CharacterGuid, ticket.Ticket), MatrixMessage.Login, ct);
+        var now = DateTime.UtcNow;
+        SendTimeSync();
+        SendMatrix(MatrixMessages.Login(CharacterGuid, ticket.Ticket), MatrixMessage.Login, now);
+        await FlushAsync(ct);
+
+        _loop = RunAsync(_stop.Token);
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_socket != null && _session != null && ServerShutdownCode == null)
+        if (_socket != null && _session != null && State != PodState.Closed)
         {
+            SendControl(ControlMessages.Close());
             try
             {
-                await SendControlAsync(ControlMessages.Close(), CancellationToken.None);
+                await FlushAsync(CancellationToken.None);
             }
             catch (SocketException)
             {
@@ -92,113 +161,319 @@ public sealed class Pod : IAsyncDisposable
         }
 
         await _stop.CancelAsync();
-        foreach (var loop in new[] { _receiveLoop, _timeSyncLoop })
+        if (_loop != null)
         {
-            if (loop != null)
+            try
             {
-                try
-                {
-                    await loop;
-                }
-                catch (OperationCanceledException)
-                {
-                }
+                await _loop;
+            }
+            catch (OperationCanceledException)
+            {
             }
         }
 
+        State = PodState.Closed;
         _socket?.Dispose();
         _stop.Dispose();
     }
 
-    private async Task SendMatrixAsync(Aero.Gen.IAero message, MatrixMessage kind, CancellationToken ct)
+    private async Task RunAsync(CancellationToken ct)
     {
-        var payload = MatrixMessages.Encode(message, kind, _protocol.Matrix);
-        await SendFrameAsync(Channel.Matrix, _matrixSequence++, payload, ct);
-    }
-
-    private Task SendControlAsync(byte[] payload, CancellationToken ct) => SendFrameAsync(Channel.Control, 0, payload, ct);
-
-    private async Task SendFrameAsync(Channel channel, ushort sequence, byte[] payload, CancellationToken ct)
-    {
-        var datagram = Framing.Datagram(_session!.SocketId, channel, sequence, payload);
-        await _socket!.SendAsync(datagram, _session.GameServer, ct);
-    }
-
-    private async Task ReceiveLoopAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested && ServerShutdownCode == null)
+        var receive = _socket!.ReceiveAsync(ct).AsTask();
+        try
         {
-            var result = await _socket!.ReceiveAsync(ct);
-            foreach (var frame in Framing.Parse(result.Buffer, out var socketId))
+            while (!ct.IsCancellationRequested && State != PodState.Closed)
             {
-                if (socketId != _session!.SocketId)
+                var wait = Task.Delay(_timings.Tick, ct);
+                if (await Task.WhenAny(receive, wait) == receive)
                 {
-                    continue;
+                    HandleDatagram(receive.Result.Buffer, DateTime.UtcNow);
+                    receive = _socket.ReceiveAsync(ct).AsTask();
                 }
 
-                await HandleFrameAsync(frame, ct);
+                OnTick(DateTime.UtcNow);
+                await FlushAsync(ct);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+        catch (Exception e) when (e is SocketException or InvalidOperationException or IndexOutOfRangeException)
+        {
+            Failure = e.Message;
+            State = PodState.Closed;
+            Log?.Invoke(this, $"stopped: {e.Message}");
+        }
+    }
+
+    private void HandleDatagram(byte[] datagram, DateTime now)
+    {
+        DatagramsReceived++;
+        _bytesDown += datagram.Length;
+
+        var lastReliable = new Dictionary<Channel, ushort>();
+        foreach (var frame in Framing.Parse(datagram, out var socketId))
+        {
+            if (socketId != _session!.SocketId || frame.Payload.IsEmpty)
+            {
+                continue;
+            }
+
+            if (frame.Channel == Channel.Control)
+            {
+                HandleControl(frame.Payload.Span, now);
+                continue;
+            }
+
+            var inbound = _inbound[frame.Channel];
+            if (inbound.IsReliable)
+            {
+                lastReliable[frame.Channel] = frame.Sequence!.Value;
+            }
+
+            foreach (var message in inbound.Accept(frame, now))
+            {
+                if (frame.Channel == Channel.Matrix)
+                {
+                    HandleMatrix(message, now);
+                }
+                else if (GssMessages.TryParse(message, out var gss))
+                {
+                    HandleGss(gss);
+                }
+            }
+        }
+
+        // One ack per reliable channel and datagram, for its last frame: the client sent 0.6 GSSAcks per reliable frame
+        foreach (var (channel, sequence) in lastReliable)
+        {
+            SendControl(ControlMessages.Ack(channel, sequence));
+        }
+    }
+
+    private void HandleControl(ReadOnlySpan<byte> payload, DateTime now)
+    {
+        if (ControlMessages.TryReadAck(payload, out var channel, out var sequence))
+        {
+            _outbound[channel].Acked(sequence, now);
+        }
+        else if (payload[0] == ControlMessages.TimeSyncResponse && payload.Length >= 9)
+        {
+            _lastTimeSyncReceived = _uptime.Elapsed;
+            var sentMicros = BitConverter.ToUInt64(payload.Slice(1, 8));
+            RoundTrip = TimeSpan.FromMilliseconds(_uptime.ElapsedMilliseconds - (long)(sentMicros / 1000));
+        }
+        else if (ControlMessages.TryReadClose(payload, out var code))
+        {
+            ServerShutdownCode = code;
+            State = PodState.Closed;
+            Log?.Invoke(this, $"server closed the connection, code {code}");
+        }
+    }
+
+    private void HandleMatrix(ReadOnlyMemory<byte> payload, DateTime now)
+    {
+        if (!MatrixMessages.TryDecode(payload, _protocol.Matrix, out var kind, out var body))
+        {
+            return;
+        }
+
+        if (kind == MatrixMessage.EnterZone)
+        {
+            var zone = MatrixMessages.Unpack<EnterZone>(body);
+            _clock = new GameClock(zone);
+            _instanceId = zone.InstanceId;
+            ZoneId = zone.ZoneId;
+            _enterZoneAt = now;
+            TimeToZone = now - _droppedAt;
+            State = PodState.LoadingZone;
+            Log?.Invoke(this, $"entering zone {zone.ZoneId} ({zone.ZoneName}) after {TimeToZone.Value.TotalSeconds:F1} s");
+        }
+    }
+
+    private void HandleGss(GssPayload message)
+    {
+        if (_world.Apply(message))
+        {
+            return;
+        }
+
+        // The server puts the character where it spawns with a ForcedMovement, the pod stands there from then on
+        if (message.EntityId == CharacterEntity && message.Typecode == _forcedMovementTypecode && message.MessageId == _forcedMovementId)
+        {
+            var move = new ForcedMovement();
+            move.Unpack(message.Body.Span);
+            if (move.Data.Type == 1)
+            {
+                Position = move.Data.Params1.Position;
             }
         }
     }
 
-    private async Task HandleFrameAsync(Frame frame, CancellationToken ct)
+    private void OnTick(DateTime now)
     {
-        switch (frame.Channel)
+        var uptime = _uptime.Elapsed;
+        if (uptime - _lastTimeSyncSent >= _timings.TimeSync && uptime - _lastTimeSyncReceived >= _timings.TimeSync)
         {
-            case Channel.Control:
-                if (ControlMessages.TryReadClose(frame.Payload.Span, out var code))
-                {
-                    ServerShutdownCode = code;
-                    Log?.Invoke(this, $"server closed the connection, code {code}");
-                }
-                else if (frame.Payload.Span[0] == ControlMessages.TimeSyncResponse)
-                {
-                    _lastTimeSyncReceived = _uptime.Elapsed;
-                }
-
-                break;
-            case Channel.Matrix:
-                await SendControlAsync(ControlMessages.Ack(Channel.Matrix, frame.Sequence!.Value), ct);
-                var name = frame.IsSplit ? "Matrix (split)"
-                         : MatrixMessages.TryDecode(frame.Payload, _protocol.Matrix, out var kind, out _) ? kind.ToString()
-                         : $"Matrix 0x{frame.Payload.Span[0]:x2}";
-                Count(name);
-                break;
-            case Channel.ReliableGss:
-                await SendControlAsync(ControlMessages.Ack(Channel.ReliableGss, frame.Sequence!.Value), ct);
-                Count("ReliableGss");
-                break;
-            case Channel.UnreliableGss:
-                Count("UnreliableGss");
-                break;
+            SendTimeSync();
         }
-    }
 
-    private void Count(string name)
-    {
-        if (_received.AddOrUpdate(name, 1, (_, n) => n + 1) == 1)
+        if (State >= PodState.LoadingZone && now - _lastClientStatus >= _timings.ClientStatus)
         {
-            Log?.Invoke(this, $"first {name}");
+            SendClientStatus(now);
         }
-    }
 
-    private async Task TimeSyncLoopAsync(CancellationToken ct)
-    {
-        using var timer = new PeriodicTimer(TimeSyncCheck);
-        while (await timer.WaitForNextTickAsync(ct) && ServerShutdownCode == null)
+        if (State == PodState.LoadingZone && now - _enterZoneAt >= _timings.ZoneLoad)
         {
-            var now = _uptime.Elapsed;
-            if (now - _lastTimeSyncSent >= TimeSyncInterval && now - _lastTimeSyncReceived >= TimeSyncInterval)
+            SendMatrix(new EnterZoneAck { Flags = 0, SpectatorTargetGuid = 0 }, MatrixMessage.EnterZoneAck, now);
+            _enterZoneAckAt = now;
+            State = PodState.EnteringWorld;
+        }
+
+        if (State == PodState.EnteringWorld
+            && (_world.HasController(CharacterEntity, _baseControllerTypecode) || now - _enterZoneAckAt >= _timings.ReadyFallback))
+        {
+            SendGss(Channel.ReliableGss, GssMessages.EncodeCommand(
+                new PlayerReady { ControllerReady = 1, StreamingComplete = 0, HaveSquadMemberIds = 1, SquadMemberIds = [] },
+                GssCharacterView.BaseController, GssCharacterCommand.PlayerReady, CharacterGuid, _protocol.Gss), now);
+            _readyAt = now;
+            TimeToWorld = now - _droppedAt;
+            State = PodState.InWorld;
+            Log?.Invoke(this, $"in the world after {TimeToWorld.Value.TotalSeconds:F1} s");
+        }
+
+        if (State == PodState.InWorld)
+        {
+            if (!_streamingSent && now - _readyAt >= _timings.Streaming)
             {
-                await SendTimeSyncAsync(ct);
+                SendGss(Channel.ReliableGss, GssMessages.EncodeCommand(
+                    new PlayerReady { ControllerReady = 0, StreamingComplete = 1, HaveSquadMemberIds = 0 },
+                    GssCharacterView.BaseController, GssCharacterCommand.PlayerReady, CharacterGuid, _protocol.Gss), now);
+                _streamingSent = true;
+            }
+
+            // Scheduled against a due time, the loop's 15.6 ms timer resolution on Windows would stretch "every 50 ms"
+            // to 62 ms otherwise. After a hitch it starts over instead of sending a burst.
+            if (now >= _nextMovement)
+            {
+                SendMovement(now);
+                _nextMovement = now - _nextMovement > _timings.Movement ? now + _timings.Movement : _nextMovement + _timings.Movement;
+            }
+        }
+
+        if (now - _lastKeyframeRequest >= _timings.KeyframeRequests)
+        {
+            SendKeyframeRequests(now);
+        }
+
+        foreach (var outbound in _outbound.Values)
+        {
+            _outbox.AddRange(outbound.DueResends(now));
+
+            // Where the client gives up on the connection ("excess packet loss")
+            if (outbound.Lost > 0 && State != PodState.Closed)
+            {
+                Failure = $"excess packet loss on {outbound.Channel}";
+                State = PodState.Closed;
+                Log?.Invoke(this, $"closing: {Failure}");
             }
         }
     }
 
-    private async Task SendTimeSyncAsync(CancellationToken ct)
+    private void SendMovement(DateTime now)
+    {
+        var time = _clock!.Now(now);
+        var shortTime = GameClock.Short(time);
+
+        // Before the ForcedMovement the client doesn't know where it is, PIN also ignores poses until the respawn
+        if (Position is { } position)
+        {
+            var onGround = (short)Math.Min(short.MaxValue, (now - _readyAt).TotalMilliseconds);
+            var input = new MovementInput
+            {
+                ShortTime = shortTime,
+                HorizontalInput = 0,
+                VerticalInput = 0,
+                HeadingPitch = default,
+                HeadingYaw = default,
+                InputFlags = 0,
+                PoseData = new MovementPoseData
+                {
+                    ShortTime = shortTime,
+                    MovementType = MovementDataType.PosRotState | MovementDataType.Aim,
+                    WaterLevelAndDesc = 0,
+                    PosRotState = new MovementPosRotState { Pos = position, Rot = Quaternion.Identity, MovementState = StandingMovementState },
+                    Velocity = Vector3.Zero,
+                    Aim = Vector3.UnitX,
+                    JetpackEnergy = FullJetpack,
+                    GroundTimePositiveAirTimeNegative = onGround,
+                    TimeSinceLastJump = onGround,
+                    HaveDebugData = 0,
+                },
+                EndShort = unchecked((ushort)(shortTime - (InterpolationDelay * 5))),
+                InterpolationDelay = InterpolationDelay,
+            };
+            SendGss(Channel.UnreliableGss, GssMessages.EncodeCommand(input, GssCharacterView.BaseController, GssCharacterCommand.MovementInput, CharacterGuid, _protocol.Gss), now);
+        }
+
+        SendGss(Channel.UnreliableGss, GssMessages.EncodeRoot(new ScheduleUpdateRequest { Time = time }, GssMessage.ScheduleUpdateRequest, _instanceId, _protocol.Gss), now);
+    }
+
+    private void SendClientStatus(DateTime now)
+    {
+        var elapsed = _lastClientStatus == default ? 0 : (now - _lastClientStatus).TotalMilliseconds;
+        _lastClientStatus = now;
+        SendMatrix(new ClientStatus
+        {
+            ClientTime = (uint)_uptime.ElapsedMilliseconds,
+            RoundTripTime = (ushort)Math.Min(ushort.MaxValue, RoundTrip?.TotalMilliseconds ?? 0),
+            ElapsedMs = (ushort)Math.Min(ushort.MaxValue, elapsed),
+            BytesDown = (uint)Math.Min(uint.MaxValue, Interlocked.Exchange(ref _bytesDown, 0)),
+            BytesUp = (uint)Math.Min(uint.MaxValue, Interlocked.Exchange(ref _bytesUp, 0)),
+            QualityOfServiceDown = new AeroMessages.Common.HalfFloat { Value = 15360 }, // 1.0, what the client always sent
+            QualityOfServiceUp = new AeroMessages.Common.HalfFloat { Value = 15360 },
+            Unk8 = [],
+        }, MatrixMessage.ClientStatus, now);
+    }
+
+    private void SendKeyframeRequests(DateTime now)
+    {
+        _lastKeyframeRequest = now;
+        var requests = _world.TakeKeyframeRequests();
+        if (requests.Count == 0)
+        {
+            return;
+        }
+
+        SendMatrix(new KeyframeRequest
+        {
+            HaveRequestByEntityID = 1,
+            EntityRequests = requests.Select(r => new RequestByEntity { Entity = r.Entity | r.Typecode, RefID = 0xffff, ChecksumStatus = 0, Checksum = 0 }).ToArray(),
+            HaveRequestByRefID = 0,
+        }, MatrixMessage.KeyframeRequest, now);
+    }
+
+    private void SendTimeSync()
     {
         _lastTimeSyncSent = _uptime.Elapsed;
-        await SendControlAsync(ControlMessages.TimeSync(Microseconds()), ct);
+        SendControl(ControlMessages.TimeSync(Microseconds()));
+    }
+
+    private void SendMatrix(IAero message, MatrixMessage kind, DateTime now) =>
+        _outbox.AddRange(_outbound[Channel.Matrix].Send(MatrixMessages.Encode(message, kind, _protocol.Matrix), now));
+
+    private void SendGss(Channel channel, byte[] payload, DateTime now) => _outbox.AddRange(_outbound[channel].Send(payload, now));
+
+    private void SendControl(byte[] payload) => _outbox.Add(Framing.Frame(Channel.Control, 0, payload));
+
+    private async Task FlushAsync(CancellationToken ct)
+    {
+        foreach (var datagram in _outbox.TakeDatagrams(_session!.SocketId))
+        {
+            await _socket!.SendAsync(datagram, _session.GameServer, ct);
+            DatagramsSent++;
+            _bytesUp += datagram.Length;
+        }
     }
 
     // The client sends timeGetTime() * 1000, milliseconds of uptime written as microseconds

@@ -1,13 +1,21 @@
+using System.Globalization;
+
 namespace DropPod;
 
-internal sealed record Options(string Command, Uri Operator, int Pods, int First, TimeSpan Duration, bool AcceptAnyCertificate)
+internal sealed record Options(
+    string Command,
+    Uri Operator,
+    int Pods,
+    int First,
+    TimeSpan Duration,
+    bool AcceptAnyCertificate)
 {
     public const string Usage = """
         droppod <command> [options]
 
         Commands:
-          seed    Create the pod accounts and their characters on RIN (safe to run again)
-          drop    Drop pods: log in through RIN and connect to the game server
+          seed               Create the pod accounts and their characters on RIN (safe to run again)
+          drop               Drop pods: log in through RIN and stay in the world for a while
 
         Options:
           --operator <url>   Operator host, the client's OperatorHost (default https://localhost:5001)
@@ -44,13 +52,13 @@ internal sealed record Options(string Command, Uri Operator, int Pods, int First
                         operatorHost = new Uri(Next());
                         break;
                     case "--pods":
-                        pods = int.Parse(Next());
+                        pods = int.Parse(Next(), CultureInfo.InvariantCulture);
                         break;
                     case "--first":
-                        first = int.Parse(Next());
+                        first = int.Parse(Next(), CultureInfo.InvariantCulture);
                         break;
                     case "--seconds":
-                        seconds = int.Parse(Next());
+                        seconds = int.Parse(Next(), CultureInfo.InvariantCulture);
                         break;
                     case "--insecure":
                         insecure = true;
@@ -60,7 +68,7 @@ internal sealed record Options(string Command, Uri Operator, int Pods, int First
                         return null;
                 }
             }
-            catch (Exception e) when (e is ArgumentException or FormatException or UriFormatException)
+            catch (Exception e) when (e is ArgumentException or FormatException or UriFormatException or OverflowException)
             {
                 error = e.Message;
                 return null;
