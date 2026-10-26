@@ -15,8 +15,13 @@ namespace DropPod.Client;
 /// <remarks>It doesn't answer EnterZone yet, so it never gets into the world.</remarks>
 public sealed class Pod : IAsyncDisposable
 {
-    /// <summary>Not checked against the client's rate yet.</summary>
-    private static readonly TimeSpan TimeSyncInterval = TimeSpan.FromSeconds(5);
+    /// <summary>
+    /// The 1962 client sends one once 2 s have passed since both its last request and the last response
+    /// (FUN_00fe8e00).
+    /// </summary>
+    private static readonly TimeSpan TimeSyncInterval = TimeSpan.FromSeconds(2);
+
+    private static readonly TimeSpan TimeSyncCheck = TimeSpan.FromMilliseconds(250);
 
     private readonly ClientProtocol _protocol;
     private readonly Stopwatch _uptime = Stopwatch.StartNew();
@@ -27,6 +32,9 @@ public sealed class Pod : IAsyncDisposable
     private Task? _receiveLoop;
     private Task? _timeSyncLoop;
     private ushort _matrixSequence;
+    // A day before the pod started reads as "never" without overflowing the subtraction
+    private TimeSpan _lastTimeSyncSent = TimeSpan.FromDays(-1);
+    private TimeSpan _lastTimeSyncReceived = TimeSpan.FromDays(-1);
 
     public Pod(string name, Red5Credentials account, ulong characterGuid, ClientProtocol protocol)
     {
@@ -66,7 +74,7 @@ public sealed class Pod : IAsyncDisposable
         _receiveLoop = ReceiveLoopAsync(_stop.Token);
         _timeSyncLoop = TimeSyncLoopAsync(_stop.Token);
 
-        await SendControlAsync(ControlMessages.TimeSync(Microseconds()), ct);
+        await SendTimeSyncAsync(ct);
         await SendMatrixAsync(MatrixMessages.Login(CharacterGuid, ticket.Ticket), MatrixMessage.Login, ct);
     }
 
@@ -143,6 +151,10 @@ public sealed class Pod : IAsyncDisposable
                     ServerShutdownCode = code;
                     Log?.Invoke(this, $"server closed the connection, code {code}");
                 }
+                else if (frame.Payload.Span[0] == ControlMessages.TimeSyncResponse)
+                {
+                    _lastTimeSyncReceived = _uptime.Elapsed;
+                }
 
                 break;
             case Channel.Matrix:
@@ -172,12 +184,23 @@ public sealed class Pod : IAsyncDisposable
 
     private async Task TimeSyncLoopAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(TimeSyncInterval);
+        using var timer = new PeriodicTimer(TimeSyncCheck);
         while (await timer.WaitForNextTickAsync(ct) && ServerShutdownCode == null)
         {
-            await SendControlAsync(ControlMessages.TimeSync(Microseconds()), ct);
+            var now = _uptime.Elapsed;
+            if (now - _lastTimeSyncSent >= TimeSyncInterval && now - _lastTimeSyncReceived >= TimeSyncInterval)
+            {
+                await SendTimeSyncAsync(ct);
+            }
         }
     }
 
-    private ulong Microseconds() => (ulong)(_uptime.Elapsed.Ticks / (TimeSpan.TicksPerMillisecond / 1000));
+    private async Task SendTimeSyncAsync(CancellationToken ct)
+    {
+        _lastTimeSyncSent = _uptime.Elapsed;
+        await SendControlAsync(ControlMessages.TimeSync(Microseconds()), ct);
+    }
+
+    // The client sends timeGetTime() * 1000, milliseconds of uptime written as microseconds
+    private ulong Microseconds() => (ulong)_uptime.ElapsedMilliseconds * 1000;
 }
