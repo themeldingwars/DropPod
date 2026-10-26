@@ -4,4 +4,13 @@
     <RootNamespace>DropPod.Client</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Same version as PIN, Aero.Protocol holds the wire id tables per protocol version -->
+    <PackageReference Include="Aero.Gen" Version="1.7.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\lib\AeroMessages\AeroMessages\AeroMessages.csproj" />
+  </ItemGroup>
+
 </Project>

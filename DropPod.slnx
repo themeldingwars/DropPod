@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/lib/">
+    <Project Path="lib/AeroMessages/AeroMessages/AeroMessages.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/DropPod.Client/DropPod.Client.csproj" />
     <Project Path="src/DropPod/DropPod.csproj" />

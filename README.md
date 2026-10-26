@@ -7,6 +7,9 @@ A headless Firefall client that floods [PIN](https://github.com/themeldingwars/P
 ## Building
 
 ```
+git submodule update --init
 dotnet build
 dotnet test
 ```
+
+Keep in mind, that `lib/AeroMessages` has to stay on the same commit as PIN's `Lib/AeroMessages`, otherwise the pods and the server don't agree on what the messages look like.
