@@ -25,6 +25,20 @@ public static class ControlMessages
         return payload;
     }
 
+    public static bool TryReadAck(ReadOnlySpan<byte> payload, out Channel channel, out ushort ackedSequence)
+    {
+        channel = default;
+        ackedSequence = 0;
+        if (payload.Length < 5 || payload[0] is not (MatrixAck or GssAck))
+        {
+            return false;
+        }
+
+        channel = payload[0] == MatrixAck ? Channel.Matrix : Channel.ReliableGss;
+        ackedSequence = BinaryPrimitives.ReadUInt16BigEndian(payload[3..]);
+        return true;
+    }
+
     public static byte[] TimeSync(ulong clientMicroseconds)
     {
         var payload = new byte[9];

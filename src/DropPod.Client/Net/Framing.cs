@@ -50,19 +50,37 @@ public static class Framing
         return (ushort)(((byte)channel << 14) | ((resendCount & 0b11) << 12) | ((isSplit ? 1 : 0) << 11) | length);
     }
 
-    public static int WriteFrame(Span<byte> destination, Channel channel, ushort sequence, ReadOnlySpan<byte> payload, bool isSplit = false)
+    /// <summary>Returns the bytes written. A resend gets its data XORed.</summary>
+    public static int WriteFrame(Span<byte> destination, Channel channel, ushort sequence, ReadOnlySpan<byte> payload, bool isSplit = false, byte resendCount = 0)
     {
         var framing = HeaderSize + (IsSequenced(channel) ? SequenceSize : 0);
         var length = framing + payload.Length;
 
-        BinaryPrimitives.WriteUInt16BigEndian(destination, PackHeader(channel, 0, isSplit, length));
+        BinaryPrimitives.WriteUInt16BigEndian(destination, PackHeader(channel, resendCount, isSplit, length));
         if (IsSequenced(channel))
         {
             BinaryPrimitives.WriteUInt16BigEndian(destination[HeaderSize..], sequence);
         }
 
-        payload.CopyTo(destination[framing..]);
+        var data = destination.Slice(framing, payload.Length);
+        payload.CopyTo(data);
+        if (resendCount > 0)
+        {
+            var xor = ResendXor(resendCount);
+            for (var i = 0; i < data.Length; i++)
+            {
+                data[i] ^= xor;
+            }
+        }
+
         return length;
+    }
+
+    public static byte[] Frame(Channel channel, ushort sequence, ReadOnlySpan<byte> payload, bool isSplit = false, byte resendCount = 0)
+    {
+        var frame = new byte[HeaderSize + (IsSequenced(channel) ? SequenceSize : 0) + payload.Length];
+        WriteFrame(frame, channel, sequence, payload, isSplit, resendCount);
+        return frame;
     }
 
     public static byte[] Datagram(uint socketId, Channel channel, ushort sequence, ReadOnlySpan<byte> payload, bool isSplit = false)
