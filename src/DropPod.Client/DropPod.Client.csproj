@@ -7,6 +7,8 @@
   <ItemGroup>
     <!-- Same version as PIN, Aero.Protocol holds the wire id tables per protocol version -->
     <PackageReference Include="Aero.Gen" Version="1.7.4" />
+    <!-- Red 5's request signing, the same code RIN checks the signatures with -->
+    <PackageReference Include="FauFau" Version="2.0.2" />
   </ItemGroup>
 
   <ItemGroup>
