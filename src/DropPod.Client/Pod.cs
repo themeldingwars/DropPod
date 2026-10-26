@@ -225,7 +225,7 @@ public sealed class Pod : IAsyncDisposable
         DatagramsReceived++;
         _bytesDown += datagram.Length;
 
-        var lastReliable = new Dictionary<Channel, ushort>();
+        var reliableChannels = new HashSet<Channel>();
         foreach (var frame in Framing.Parse(datagram, out var socketId))
         {
             if (socketId != _session!.SocketId || frame.Payload.IsEmpty)
@@ -242,7 +242,7 @@ public sealed class Pod : IAsyncDisposable
             var inbound = _inbound[frame.Channel];
             if (inbound.IsReliable)
             {
-                lastReliable[frame.Channel] = frame.Sequence!.Value;
+                reliableChannels.Add(frame.Channel);
             }
 
             foreach (var message in inbound.Accept(frame, now))
@@ -258,10 +258,11 @@ public sealed class Pod : IAsyncDisposable
             }
         }
 
-        // One ack per reliable channel and datagram, for its last frame: the client sent 0.6 GSSAcks per reliable frame
-        foreach (var (channel, sequence) in lastReliable)
+        // One ack per reliable channel and datagram: the client sent 0.6 GSSAcks per reliable frame
+        foreach (var channel in reliableChannels)
         {
-            SendControl(ControlMessages.Ack(channel, sequence));
+            var inbound = _inbound[channel];
+            SendControl(ControlMessages.Ack(channel, inbound.Expected, inbound.HeldSequences));
         }
     }
 

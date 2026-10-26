@@ -15,13 +15,22 @@ public static class ControlMessages
     public const byte TimeSyncResponse = 5;
     public const byte MtuProbe = 6;
 
-    /// <summary>The sequence number expected next, then the one acked.</summary>
-    public static byte[] Ack(Channel channel, ushort ackedSequence)
+    /// <summary>
+    /// Like the client: the sequence number expected next, the last one in order, then each frame that arrived past
+    /// the gap. The server only resends what isn't in there.
+    /// </summary>
+    public static byte[] Ack(Channel channel, ushort nextExpected, IReadOnlyList<ushort>? pastGap = null)
     {
-        var payload = new byte[5];
+        pastGap ??= [];
+        var payload = new byte[5 + (pastGap.Count * 2)];
         payload[0] = channel == Channel.Matrix ? MatrixAck : GssAck;
-        BinaryPrimitives.WriteUInt16BigEndian(payload.AsSpan(1), unchecked((ushort)(ackedSequence + 1)));
-        BinaryPrimitives.WriteUInt16BigEndian(payload.AsSpan(3), ackedSequence);
+        BinaryPrimitives.WriteUInt16BigEndian(payload.AsSpan(1), nextExpected);
+        BinaryPrimitives.WriteUInt16BigEndian(payload.AsSpan(3), unchecked((ushort)(nextExpected - 1)));
+        for (var i = 0; i < pastGap.Count; i++)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(payload.AsSpan(5 + (i * 2)), pastGap[i]);
+        }
+
         return payload;
     }
 

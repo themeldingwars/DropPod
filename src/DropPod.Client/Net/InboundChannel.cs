@@ -5,8 +5,7 @@ namespace DropPod.Client.Net;
 /// handled already is dropped. Split messages come out in one piece.
 /// </summary>
 /// <remarks>
-/// PIN doesn't resend its reliable frames yet, so a lost frame stalls a reliable channel for good. The pods wait like
-/// the client does, <see cref="GapSince"/> shows since when.
+/// A lost frame holds back everything after it until the server resends it, <see cref="GapSince"/> shows since when.
 /// </remarks>
 public sealed class InboundChannel
 {
@@ -32,6 +31,12 @@ public sealed class InboundChannel
 
     /// <summary>Frames waiting behind a missing one.</summary>
     public int Held => _held.Count;
+
+    /// <summary>The next frame in order.</summary>
+    public ushort Expected => _expected;
+
+    /// <summary>The frames waiting behind a missing one, in order.</summary>
+    public List<ushort> HeldSequences => _held.Keys.OrderBy(s => unchecked((ushort)(s - _expected))).ToList();
 
     /// <summary>Since when frames are waiting behind a missing one, null while nothing is.</summary>
     public DateTime? GapSince { get; private set; }
