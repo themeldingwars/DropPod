@@ -32,7 +32,9 @@ Creates the accounts `droppod001@droppod.local` to `droppod200@droppod.local`, e
 droppod drop --pods 10 --seconds 600
 ```
 
-Logs the pods in, lets them enter the zone and keeps them in the world, standing around like an idle player. They send what the 1962 client sent while standing still: movement and update requests 20 times a second, a status every second and a time sync every 2 seconds. At the end it prints a line per pod with its state, zone and how many entities it knows of.
+Logs the pods in, lets them enter the zone and keeps them in the world, standing around like an idle player. They send what the 1962 client sent while standing still: movement and update requests 20 times a second, a status every second and a time sync every 2 seconds.
+
+Every 30 seconds it prints how many pods are in which state. At the end there's a line per pod with how long it took to get into the world, the entities it knows of, gaps on the reliable channels, resends and the round trip. The exit code is 1, if a pod failed or the server closed its connection.
 
 ### Options
 
