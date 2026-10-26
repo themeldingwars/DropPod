@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DropPod.Client/DropPod.Client.csproj" />
+    <Project Path="src/DropPod/DropPod.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DropPod.Tests/DropPod.Tests.csproj" />
+  </Folder>
+</Solution>

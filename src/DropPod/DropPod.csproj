@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>droppod</AssemblyName>
+    <RootNamespace>DropPod</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DropPod.Client\DropPod.Client.csproj" />
+  </ItemGroup>
+
+</Project>
