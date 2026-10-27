@@ -19,8 +19,9 @@ public enum PilotState
 /// <summary>
 /// Flies one pod account: logs in through RIN, drops the pod and hands it to its behavior once it's in the world.
 /// When the character is in another zone than <see cref="Zone"/>, the pod first sends the zone admin command and logs
-/// in again. A behavior that leaves (churn) gets a new connection after its pause. <see cref="RunAsync"/> doesn't
-/// throw, how it ended is in <see cref="Failure"/>.
+/// in again. A behavior that leaves (churn) gets a new connection after its pause, one that hops goes through the same
+/// transfer and starts over in the other zone. <see cref="RunAsync"/> doesn't throw, how it ended is in
+/// <see cref="Failure"/>.
 /// </summary>
 public sealed class Pilot(string name, Red5Credentials account, ClientProtocol protocol, Func<IBehavior> behavior)
 {
@@ -51,6 +52,11 @@ public sealed class Pilot(string name, Red5Credentials account, ClientProtocol p
 
     public bool Transferred { get; private set; }
 
+    public int Hops { get; private set; }
+
+    /// <summary>From each hop's zone command to being in the world of the other zone, added up.</summary>
+    public TimeSpan HopTime { get; private set; }
+
     /// <summary>Set when the pod is in the wanted zone and its behavior started.</summary>
     public DateTime? ArrivedAt { get; private set; }
 
@@ -76,6 +82,9 @@ public sealed class Pilot(string name, Red5Credentials account, ClientProtocol p
                 ?? throw new InvalidOperationException($"{Account.Email} has no character, run seed first");
 
             var started = DateTime.UtcNow;
+            var wanted = Zone;
+            uint? sentTo = null;
+            DateTime? hopStarted = null;
             while (true)
             {
                 State = PilotState.LoggingIn;
@@ -91,14 +100,16 @@ public sealed class Pilot(string name, Red5Credentials account, ClientProtocol p
                     return;
                 }
 
-                if (Zone is { } zone && pod.ZoneId != zone)
+                if (wanted is { } zone && pod.ZoneId != zone)
                 {
-                    if (Transferred)
+                    if (sentTo == zone)
                     {
                         Failure = $"still in zone {pod.ZoneId} after the transfer to {zone}";
                         return;
                     }
 
+                    sentTo = zone;
+                    Transferred = true;
                     if (!await TransferAsync(pod, zone, ct))
                     {
                         return;
@@ -116,13 +127,35 @@ public sealed class Pilot(string name, Red5Credentials account, ClientProtocol p
                     TimeToArrive = ArrivedAt - started;
                 }
 
+                if (hopStarted != null)
+                {
+                    Hops++;
+                    HopTime += DateTime.UtcNow - hopStarted.Value;
+                    hopStarted = null;
+                }
+
                 State = PilotState.Active;
                 pod.Behavior = behavior();
 
-                if (!await WaitAsync(pod, () => pod.LeaveFor != null, Timeout.InfiniteTimeSpan, ct))
+                if (!await WaitAsync(pod, () => pod.LeaveFor != null || pod.HopTo != null, Timeout.InfiniteTimeSpan, ct))
                 {
                     Failure = ClosedReason(pod);
                     return;
+                }
+
+                if (pod.HopTo is { } hop)
+                {
+                    wanted = sentTo = hop;
+                    hopStarted = DateTime.UtcNow;
+                    if (!await TransferAsync(pod, hop, ct))
+                    {
+                        return;
+                    }
+
+                    LastState = pod.State;
+                    await pod.DisposeAsync();
+                    pod = null;
+                    continue;
                 }
 
                 State = PilotState.Resting;
@@ -157,7 +190,6 @@ public sealed class Pilot(string name, Red5Credentials account, ClientProtocol p
     private async Task<bool> TransferAsync(Pod pod, uint zone, CancellationToken ct)
     {
         State = PilotState.Transferring;
-        Transferred = true;
         Log?.Invoke(this, $"in zone {pod.ZoneId}, transferring to {zone}");
 
         var sentAt = DateTime.UtcNow;

@@ -42,6 +42,7 @@ What the pods do in the world, with `--behavior`:
 - `wander`: runs to a random spot within 20 m of its spawn, rests a few seconds, picks the next one. Pods have no collision, so they keep the spawn's height.
 - `chat`: stands and talks on Zone chat every 20 seconds or so. PIN sends every message to everyone in the zone, so this one grows with the square of the pods.
 - `churn`: stands for 30 to 90 seconds, logs out and comes back 5 to 15 seconds later, over and over.
+- `hop`: stands for 60 to 180 seconds, then travels to New Eden (448), Devil's Tusk (162) or Sertao (1030) with the `zone` admin command, whichever it isn't in, over and over. Note that PIN builds a zone's collision cache the first time it loads the zone, so preload them for a fair run.
 
 A character logs in wherever it was last. With `--zone`, a pod in another zone first sends the `zone` admin command, logs in again once PIN moved it, and only then starts its behavior. PIN keeps the zone, so the next run in the same zone logs in directly.
 
@@ -78,7 +79,7 @@ The groups take the pod numbers in order, `DropPod001` to `DropPod150` wander, `
 - `--first <n>`: the number of the first pod, to split the pods over several runs (default 1)
 - `--seconds <n>`: how long the pods hold once all of them are in the world (default 30)
 - `--ramp <n>/s`: how many pods drop and leave per second, or per minute with `/m` (default `5/s`)
-- `--behavior <name>`: `idle` (default), `wander`, `chat` or `churn` (`drop` only)
+- `--behavior <name>`: `idle` (default), `wander`, `chat`, `churn` or `hop` (`drop` only)
 - `--zone <id>`: move the characters to this zone first (`drop` only)
 - `--scenario <name>`: the invasion file (`invade` only)
 - `--insecure`: accept any TLS certificate, on by default for `localhost`, since local stacks run on a development certificate

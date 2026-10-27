@@ -130,6 +130,11 @@ internal static class Runner
             text.Append(CultureInfo.InvariantCulture, $", transferred, {Seconds(pilot.TimeToArrive)} from the first ticket");
         }
 
+        if (pilot.Hops > 0)
+        {
+            text.Append(CultureInfo.InvariantCulture, $", {pilot.Hops} hops, {(pilot.HopTime / pilot.Hops).TotalSeconds:F1} s each");
+        }
+
         if (pilot.Connections > 1)
         {
             text.Append(CultureInfo.InvariantCulture, $", {pilot.Connections} connections");

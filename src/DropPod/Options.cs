@@ -38,7 +38,7 @@ internal sealed record Options(
           --insecure         Accept any TLS certificate (on by default for localhost)
           --record           Record every pod as a pcapng in runs/<timestamp>
           --zone <id>        drop: move the characters to this zone first, with the zone admin command
-          --behavior <name>  drop: what the pods do in the world: idle (default), wander, chat or churn
+          --behavior <name>  drop: what the pods do in the world: idle (default), wander, chat, churn or hop
           --scenario <name>  invade: invasions/<name>.json or a path, the options above override the file
         """;
 

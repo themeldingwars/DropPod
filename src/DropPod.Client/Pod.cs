@@ -170,6 +170,11 @@ public sealed class Pod : IAsyncDisposable
 
     public TimeSpan? LeaveFor { get; private set; }
 
+    /// <summary>Asks the pilot to move the character to another zone and log in there.</summary>
+    public void Hop(uint zone) => HopTo = zone;
+
+    public uint? HopTo { get; private set; }
+
     public void Say(ChatChannel channel, string text)
     {
         var chat = new PerformTextChat
