@@ -15,6 +15,8 @@ public static class ControlMessages
     public const byte TimeSyncResponse = 5;
     public const byte MtuProbe = 6;
 
+    private const int MaxCloseText = 0xf3;
+
     /// <summary>
     /// Like the client: the sequence number expected next, the last one in order, then each frame that arrived past
     /// the gap. The server only resends what isn't in there.
@@ -58,6 +60,35 @@ public static class ControlMessages
 
     /// <summary>Without a code or reason, what a client sends when it logs out.</summary>
     public static byte[] Close() => [CloseConnection, 0, 0, 0, 0];
+
+    /// <summary>
+    /// The client's answer to the server's CloseConnection (GameSocket_SendClose): the server's code and reason text
+    /// echoed back. A close too short for a code gets 0xFFFFFFFF, the text stops at a NUL or after 243 bytes.
+    /// </summary>
+    public static byte[] CloseReply(ReadOnlySpan<byte> serverClose)
+    {
+        var code = new byte[] { 0, 0, 0, 0 };
+        var text = ReadOnlySpan<byte>.Empty;
+        if (serverClose.Length >= 5)
+        {
+            code = serverClose.Slice(1, 4).ToArray();
+            text = serverClose[5..];
+        }
+        else if (serverClose.Length > 1)
+        {
+            code = [0xff, 0xff, 0xff, 0xff];
+            text = serverClose[1..];
+        }
+
+        text = text[..Math.Min(text.Length, MaxCloseText)];
+        var end = text.IndexOf((byte)0);
+        if (end >= 0)
+        {
+            text = text[..end];
+        }
+
+        return [CloseConnection, .. code, .. text];
+    }
 
     public static bool TryReadClose(ReadOnlySpan<byte> payload, out uint shutdownCode)
     {

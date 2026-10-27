@@ -13,7 +13,8 @@ internal sealed record Options(
     bool AcceptAnyCertificate,
     bool Record,
     string Behavior,
-    Ramp Ramp)
+    Ramp Ramp,
+    uint? Zone)
 {
     public const string Usage = """
         droppod <command> [options]
@@ -30,6 +31,7 @@ internal sealed record Options(
           --ramp <n>/s       drop: how fast pods drop and leave again, per second or /m per minute (default 5/s)
           --insecure         Accept any TLS certificate (on by default for localhost)
           --record           drop: record every pod as a pcapng in runs/<timestamp>
+          --zone <id>        drop: move the characters to this zone first, with the zone admin command
           --behavior <name>  drop: what the pods do in the world: idle (default), wander or chat
         """;
 
@@ -50,6 +52,7 @@ internal sealed record Options(
         var record = false;
         var behavior = "idle";
         var ramp = Ramp.Default;
+        uint? zone = null;
 
         for (var i = 1; i < args.Length; i++)
         {
@@ -76,6 +79,9 @@ internal sealed record Options(
                         break;
                     case "--record":
                         record = true;
+                        break;
+                    case "--zone":
+                        zone = uint.Parse(Next(), CultureInfo.InvariantCulture);
                         break;
                     case "--ramp":
                         var text = Next();
@@ -108,6 +114,6 @@ internal sealed record Options(
         }
 
         var acceptAny = insecure ?? operatorHost.IsLoopback;
-        return new Options(command, operatorHost, pods, first, TimeSpan.FromSeconds(seconds), acceptAny, record, behavior, ramp);
+        return new Options(command, operatorHost, pods, first, TimeSpan.FromSeconds(seconds), acceptAny, record, behavior, ramp, zone);
     }
 }

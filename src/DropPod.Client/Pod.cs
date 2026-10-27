@@ -54,6 +54,7 @@ public sealed class Pod : IAsyncDisposable
     private readonly byte _baseControllerTypecode;
     private readonly byte _forcedMovementTypecode;
     private readonly byte _forcedMovementId;
+    private readonly byte _chatMessageListId;
 
     private UdpClient? _socket;
     private IPEndPoint? _local;
@@ -87,6 +88,7 @@ public sealed class Pod : IAsyncDisposable
 
         GssTables.TryGetWireIds(protocol.Gss, GssCharacterView.BaseController, GssCharacterCommand.PlayerReady, out _baseControllerTypecode, out _);
         GssTables.TryGetWireIds(protocol.Gss, GssCharacterView.CombatController, GssCharacterMessage.ForcedMovement, out _forcedMovementTypecode, out _forcedMovementId);
+        _chatMessageListId = GssTables.GetMessageId(protocol.Gss, GssTables.Ns.Root, GssTables.Kind.Message, (int)GssMessage.ChatMessageList);
     }
 
     public string Name { get; }
@@ -129,6 +131,9 @@ public sealed class Pod : IAsyncDisposable
     public uint? ServerShutdownCode { get; private set; }
 
     public string? Failure { get; private set; }
+
+    /// <summary>PIN answers admin commands and refuses things on the Debug channel.</summary>
+    public (DateTime At, string Text)? LastDebugChat { get; private set; }
 
     public EntityTable World => _world;
 
@@ -330,6 +335,8 @@ public sealed class Pod : IAsyncDisposable
         }
         else if (ControlMessages.TryReadClose(payload, out var code))
         {
+            // PIN keeps the character in the world until the client answers
+            SendControl(ControlMessages.CloseReply(payload));
             ServerShutdownCode = code;
             State = PodState.Closed;
             Log?.Invoke(this, $"server closed the connection, code {code}");
@@ -358,6 +365,13 @@ public sealed class Pod : IAsyncDisposable
 
     private void HandleGss(GssPayload message)
     {
+        // Root messages like the chat come with typecode 0 and aren't about a view
+        if (message.Typecode == 0 && message.MessageId == _chatMessageListId)
+        {
+            HandleChat(message.Body.Span);
+            return;
+        }
+
         if (_world.Apply(message))
         {
             return;
@@ -374,6 +388,17 @@ public sealed class Pod : IAsyncDisposable
                 Spawn ??= Position;
                 _velocity = Vector3.Zero;
             }
+        }
+    }
+
+    private void HandleChat(ReadOnlySpan<byte> body)
+    {
+        var list = new ChatMessageList();
+        list.Unpack(body);
+        foreach (var chat in list.Messages.Where(m => m.Channel == (byte)ChatChannel.Debug))
+        {
+            LastDebugChat = (DateTime.UtcNow, chat.Message);
+            Log?.Invoke(this, $"server: {chat.Message}");
         }
     }
 

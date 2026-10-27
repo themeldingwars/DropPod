@@ -25,6 +25,16 @@ public sealed class ControlMessagesTests
     }
 
     [TestMethod]
+    [DataRow("00", "0000000000")]
+    [DataRow("0000000000", "0000000000")]
+    [DataRow("00000000074279650062", "0000000007427965")]
+    [DataRow("00427965", "00FFFFFFFF427965")]
+    public void AnswersACloseLikeTheClient(string serverClose, string reply)
+    {
+        CollectionAssert.AreEqual(Convert.FromHexString(reply), ControlMessages.CloseReply(Convert.FromHexString(serverClose)));
+    }
+
+    [TestMethod]
     public void ReadsTheShutdownCode()
     {
         Assert.IsTrue(ControlMessages.TryReadClose(Convert.FromHexString("0000000007"), out var code));

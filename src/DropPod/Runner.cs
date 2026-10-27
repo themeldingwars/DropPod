@@ -125,6 +125,16 @@ internal static class Runner
         var text = new StringBuilder();
         text.Append(CultureInfo.InvariantCulture, $"{pod.Name} socket {pod.SocketId:x8} {pilot.LastState}");
         text.Append(CultureInfo.InvariantCulture, $", zone {pod.ZoneId} after {Seconds(pod.TimeToZone)}, in the world after {Seconds(pod.TimeToWorld)}");
+        if (pilot.Transferred)
+        {
+            text.Append(CultureInfo.InvariantCulture, $", transferred, {Seconds(pilot.TimeToArrive)} from the first ticket");
+        }
+
+        if (pilot.Connections > 1)
+        {
+            text.Append(CultureInfo.InvariantCulture, $", {pilot.Connections} connections");
+        }
+
         text.Append(CultureInfo.InvariantCulture, $", position {(pod.Position is { } p ? $"{p.X:F1} {p.Y:F1} {p.Z:F1}" : "unknown")}");
         text.Append(CultureInfo.InvariantCulture, $", round trip {(pod.RoundTrip is { } rtt ? $"{rtt.TotalMilliseconds:F0} ms" : "-")}");
         text.Append(CultureInfo.InvariantCulture, $", {pod.DatagramsSent} datagrams sent, {pod.DatagramsReceived} received");

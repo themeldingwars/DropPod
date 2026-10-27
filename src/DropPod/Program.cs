@@ -98,6 +98,7 @@ static async Task<int> DropAsync(RinClient rin, Options options, CancellationTok
         pilots.Add(new Pilot(name, PodAccounts.Account(number), ClientProtocol.Build1962, () => PodBehaviors.Create(options.Behavior))
         {
             Recorder = folder != null ? new PcapngWriter(Path.Combine(folder, $"{name}.pcapng")) : null,
+            Zone = options.Zone,
         });
     }
 
