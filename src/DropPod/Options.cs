@@ -27,7 +27,7 @@ internal sealed record Options(
           --seconds <n>      How long dropped pods stay connected (default 30)
           --insecure         Accept any TLS certificate (on by default for localhost)
           --record           drop: record every pod as a pcapng in runs/<timestamp>
-          --behavior <name>  drop: what the pods do in the world: idle (default) or wander
+          --behavior <name>  drop: what the pods do in the world: idle (default), wander or chat
         """;
 
     public static Options? Parse(string[] args, out string? error)

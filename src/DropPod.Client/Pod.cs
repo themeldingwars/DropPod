@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Numerics;
 using Aero.Gen;
 using Aero.Protocol;
+using AeroMessages.GSS;
 using AeroMessages.GSS.Character;
 using AeroMessages.GSS.Character.Command;
 using AeroMessages.GSS.Character.Event;
@@ -158,6 +159,19 @@ public sealed class Pod : IAsyncDisposable
     }
 
     public void Stand() => _velocity = Vector3.Zero;
+
+    public void Say(ChatChannel channel, string text)
+    {
+        var chat = new PerformTextChat
+        {
+            Message = text,
+            Channel = (byte)channel,
+            HaveEntity = 0,
+            HaveTargetName = 0,
+            AlternateData = new ChatMessageAlternateData { AlternateType = ChatMessageAlternateData.ChatMessageAlternateType.NONE, HaveAltData = 0 },
+        };
+        SendGss(Channel.ReliableGss, GssMessages.EncodeCommand(chat, GssCharacterView.BaseController, GssCharacterCommand.PerformTextChat, CharacterGuid, _protocol.Gss), DateTime.UtcNow);
+    }
 
     public async Task DropAsync(RinClient rin, CancellationToken ct)
     {

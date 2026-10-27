@@ -2,7 +2,7 @@ namespace DropPod.Client.Behaviors;
 
 public static class PodBehaviors
 {
-    public static readonly string[] Names = ["idle", "wander"];
+    public static readonly string[] Names = ["idle", "wander", "chat"];
 
     public static bool IsKnown(string name) => Names.Contains(name);
 
@@ -11,6 +11,7 @@ public static class PodBehaviors
     {
         "idle" => new IdleBehavior(),
         "wander" => new WanderBehavior(),
+        "chat" => new ChatBehavior(),
         _ => throw new ArgumentException($"Unknown behavior {name}, expected one of {string.Join(", ", Names)}", nameof(name)),
     };
 }
