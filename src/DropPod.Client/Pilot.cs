@@ -12,13 +12,15 @@ public enum PilotState
     LoggingIn,
     Transferring,
     Active,
+    Resting,
     Done,
 }
 
 /// <summary>
 /// Flies one pod account: logs in through RIN, drops the pod and hands it to its behavior once it's in the world.
 /// When the character is in another zone than <see cref="Zone"/>, the pod first sends the zone admin command and logs
-/// in again. <see cref="RunAsync"/> doesn't throw, how it ended is in <see cref="Failure"/>.
+/// in again. A behavior that leaves (churn) gets a new connection after its pause. <see cref="RunAsync"/> doesn't
+/// throw, how it ended is in <see cref="Failure"/>.
 /// </summary>
 public sealed class Pilot(string name, Red5Credentials account, ClientProtocol protocol, Func<IBehavior> behavior)
 {
@@ -108,14 +110,27 @@ public sealed class Pilot(string name, Red5Credentials account, ClientProtocol p
                     continue;
                 }
 
-                ArrivedAt = DateTime.UtcNow;
-                TimeToArrive = ArrivedAt - started;
+                if (ArrivedAt == null)
+                {
+                    ArrivedAt = DateTime.UtcNow;
+                    TimeToArrive = ArrivedAt - started;
+                }
+
                 State = PilotState.Active;
                 pod.Behavior = behavior();
 
-                await WaitAsync(pod, () => false, Timeout.InfiniteTimeSpan, ct);
-                Failure = ClosedReason(pod);
-                return;
+                if (!await WaitAsync(pod, () => pod.LeaveFor != null, Timeout.InfiniteTimeSpan, ct))
+                {
+                    Failure = ClosedReason(pod);
+                    return;
+                }
+
+                State = PilotState.Resting;
+                var pause = pod.LeaveFor!.Value;
+                LastState = pod.State;
+                await pod.DisposeAsync();
+                pod = null;
+                await Task.Delay(pause, ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

@@ -165,6 +165,11 @@ public sealed class Pod : IAsyncDisposable
 
     public void Stand() => _velocity = Vector3.Zero;
 
+    /// <summary>Asks the pilot to log out and come back after the pause.</summary>
+    public void Leave(TimeSpan pause) => LeaveFor = pause;
+
+    public TimeSpan? LeaveFor { get; private set; }
+
     public void Say(ChatChannel channel, string text)
     {
         var chat = new PerformTextChat

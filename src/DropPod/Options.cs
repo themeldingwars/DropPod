@@ -32,7 +32,7 @@ internal sealed record Options(
           --insecure         Accept any TLS certificate (on by default for localhost)
           --record           drop: record every pod as a pcapng in runs/<timestamp>
           --zone <id>        drop: move the characters to this zone first, with the zone admin command
-          --behavior <name>  drop: what the pods do in the world: idle (default), wander or chat
+          --behavior <name>  drop: what the pods do in the world: idle (default), wander, chat or churn
         """;
 
     public static Options? Parse(string[] args, out string? error)
