@@ -1,5 +1,6 @@
 using System.Globalization;
 using DropPod.Client.Behaviors;
+using DropPod.Client.Invasions;
 
 namespace DropPod;
 
@@ -11,7 +12,8 @@ internal sealed record Options(
     TimeSpan Duration,
     bool AcceptAnyCertificate,
     bool Record,
-    string Behavior)
+    string Behavior,
+    Ramp Ramp)
 {
     public const string Usage = """
         droppod <command> [options]
@@ -24,7 +26,8 @@ internal sealed record Options(
           --operator <url>   Operator host, the client's OperatorHost (default https://localhost:5001)
           --pods <n>         Number of pods (default 1)
           --first <n>        Number of the first pod, to split pods across runs (default 1)
-          --seconds <n>      How long dropped pods stay connected (default 30)
+          --seconds <n>      drop: how long to hold once every pod is in the world (default 30)
+          --ramp <n>/s       drop: how fast pods drop and leave again, per second or /m per minute (default 5/s)
           --insecure         Accept any TLS certificate (on by default for localhost)
           --record           drop: record every pod as a pcapng in runs/<timestamp>
           --behavior <name>  drop: what the pods do in the world: idle (default), wander or chat
@@ -46,6 +49,7 @@ internal sealed record Options(
         bool? insecure = null;
         var record = false;
         var behavior = "idle";
+        var ramp = Ramp.Default;
 
         for (var i = 1; i < args.Length; i++)
         {
@@ -73,6 +77,15 @@ internal sealed record Options(
                     case "--record":
                         record = true;
                         break;
+                    case "--ramp":
+                        var text = Next();
+                        if (!Ramp.TryParse(text, out ramp))
+                        {
+                            error = $"Can't read the ramp {text}, expected e.g. 5/s or 30/m";
+                            return null;
+                        }
+
+                        break;
                     case "--behavior":
                         behavior = Next();
                         if (!PodBehaviors.IsKnown(behavior))
@@ -95,6 +108,6 @@ internal sealed record Options(
         }
 
         var acceptAny = insecure ?? operatorHost.IsLoopback;
-        return new Options(command, operatorHost, pods, first, TimeSpan.FromSeconds(seconds), acceptAny, record, behavior);
+        return new Options(command, operatorHost, pods, first, TimeSpan.FromSeconds(seconds), acceptAny, record, behavior, ramp);
     }
 }

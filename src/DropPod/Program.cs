@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 using DropPod;
 using DropPod.Client;
 using DropPod.Client.Behaviors;
@@ -19,11 +18,21 @@ if (options == null)
     return error == null ? 0 : 1;
 }
 
-using var cts = new CancellationTokenSource();
+// The first Ctrl+C ramps the pods down, the second closes them all at once
+using var stopping = new CancellationTokenSource();
+using var abort = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;
-    cts.Cancel();
+    if (stopping.IsCancellationRequested)
+    {
+        abort.Cancel();
+    }
+    else
+    {
+        Console.WriteLine("Stopping, press Ctrl+C again to close every pod at once");
+        stopping.Cancel();
+    }
 };
 
 using var http = RinClient.CreateHttpClient(options.AcceptAnyCertificate);
@@ -31,13 +40,13 @@ var rin = new RinClient(http, options.Operator);
 
 try
 {
-    var hosts = await rin.CheckAsync(cts.Token);
+    var hosts = await rin.CheckAsync(stopping.Token);
     Console.WriteLine($"Operator {options.Operator}, client API {hosts.ClientapiHost}");
 
     return options.Command switch
     {
-        "seed" => await SeedAsync(rin, options, cts.Token),
-        "drop" => await DropAsync(rin, options, cts.Token),
+        "seed" => await SeedAsync(rin, options, stopping.Token),
+        "drop" => await DropAsync(rin, options, stopping.Token, abort.Token),
         _ => Unknown(options.Command),
     };
 }
@@ -46,7 +55,7 @@ catch (Exception e) when (e is RinException or HttpRequestException or MatrixHan
     Console.Error.WriteLine(e.Message);
     return 1;
 }
-catch (OperationCanceledException) when (cts.IsCancellationRequested)
+catch (OperationCanceledException) when (stopping.IsCancellationRequested)
 {
     return 130;
 }
@@ -79,67 +88,29 @@ static async Task<int> SeedAsync(RinClient rin, Options options, CancellationTok
     return 0;
 }
 
-static async Task<int> DropAsync(RinClient rin, Options options, CancellationToken ct)
+static async Task<int> DropAsync(RinClient rin, Options options, CancellationToken stopping, CancellationToken abort)
 {
-    var started = DateTime.UtcNow;
-    var folder = options.Record ? RecordingFolder(started) : null;
-    var pods = new List<Pod>();
-    var recorders = new List<PcapngWriter>();
+    var folder = options.Record ? RecordingFolder(DateTime.UtcNow) : null;
+    var pilots = new List<Pilot>();
+    for (var number = options.First; number < options.First + options.Pods; number++)
+    {
+        var name = PodAccounts.CharacterName(number);
+        pilots.Add(new Pilot(name, PodAccounts.Account(number), ClientProtocol.Build1962, () => PodBehaviors.Create(options.Behavior))
+        {
+            Recorder = folder != null ? new PcapngWriter(Path.Combine(folder, $"{name}.pcapng")) : null,
+        });
+    }
+
     try
     {
-        for (var number = options.First; number < options.First + options.Pods; number++)
-        {
-            var account = PodAccounts.Account(number);
-            await rin.LoginAsync(account, ct);
-
-            var characters = await rin.ListCharactersAsync(account, ct);
-            var character = characters.FirstOrDefault(c => c.IsActive)
-                ?? throw new InvalidOperationException($"{account.Email} has no character, run seed first");
-
-            var name = PodAccounts.CharacterName(number);
-            PcapngWriter? recorder = null;
-            if (folder != null)
-            {
-                recorder = new PcapngWriter(Path.Combine(folder, $"{name}.pcapng"));
-                recorders.Add(recorder);
-            }
-
-            var pod = new Pod(name, account, character.CharacterGuid, ClientProtocol.Build1962)
-            {
-                Recorder = recorder,
-                Behavior = PodBehaviors.Create(options.Behavior),
-            };
-            pod.Log += (p, message) => Console.WriteLine($"[{p.Name}] {message}");
-            pods.Add(pod);
-
-            await pod.DropAsync(rin, ct);
-        }
-
-        Console.WriteLine($"{pods.Count} pod(s) dropped, staying for {options.Duration.TotalSeconds} s");
-        var end = started + options.Duration;
-        while (DateTime.UtcNow < end && pods.Any(p => p.State != PodState.Closed))
-        {
-            await Task.Delay(TimeSpan.FromSeconds(Math.Min(30, Math.Max(1, (end - DateTime.UtcNow).TotalSeconds))), ct);
-            Console.WriteLine(Status(pods, DateTime.UtcNow - started));
-        }
+        return await Runner.RunAsync(rin, pilots, options.Ramp, options.Duration, stopping, abort) ? 0 : 1;
     }
     finally
     {
-        Console.WriteLine();
-        foreach (var pod in pods)
+        // After the pilots, so their CloseConnection is in the recording too
+        foreach (var pilot in pilots)
         {
-            Console.WriteLine(Summary(pod));
-        }
-
-        foreach (var pod in pods)
-        {
-            await pod.DisposeAsync();
-        }
-
-        // After the pods, so their CloseConnection is in the recording too
-        foreach (var recorder in recorders)
-        {
-            recorder.Dispose();
+            pilot.Recorder?.Dispose();
         }
 
         if (folder != null)
@@ -147,53 +118,6 @@ static async Task<int> DropAsync(RinClient rin, Options options, CancellationTok
             Console.WriteLine($"Recordings in {folder}");
         }
     }
-
-    return pods.All(p => p.Failure == null && p.ServerShutdownCode == null) ? 0 : 1;
-}
-
-static string Status(IReadOnlyCollection<Pod> pods, TimeSpan elapsed)
-{
-    var states = string.Join(", ", pods.GroupBy(p => p.State).OrderBy(g => g.Key).Select(g => $"{g.Count()} {g.Key}"));
-    var stalled = pods.Count(p => p.Inbound.Values.Any(c => c.GapSince != null));
-    var rtt = pods.Where(p => p.RoundTrip != null).Select(p => p.RoundTrip!.Value.TotalMilliseconds).DefaultIfEmpty().Average();
-    return $"[{elapsed:hh\\:mm\\:ss}] {states}; {stalled} waiting on a gap; round trip {rtt:F0} ms";
-}
-
-static string Summary(Pod pod)
-{
-    var text = new StringBuilder();
-    text.Append(CultureInfo.InvariantCulture, $"{pod.Name} socket {pod.SocketId:x8} {pod.State}");
-    text.Append(CultureInfo.InvariantCulture, $", zone {pod.ZoneId} after {Seconds(pod.TimeToZone)}, in the world after {Seconds(pod.TimeToWorld)}");
-    text.Append(CultureInfo.InvariantCulture, $", position {(pod.Position is { } p ? $"{p.X:F1} {p.Y:F1} {p.Z:F1}" : "unknown")}");
-    text.Append(CultureInfo.InvariantCulture, $", round trip {(pod.RoundTrip is { } rtt ? $"{rtt.TotalMilliseconds:F0} ms" : "-")}");
-    text.Append(CultureInfo.InvariantCulture, $", {pod.DatagramsSent} datagrams sent, {pod.DatagramsReceived} received");
-    text.Append(CultureInfo.InvariantCulture, $", {pod.World.Entities} entities ({pod.World.Views} views, {pod.World.Controllers} controllers, {pod.World.ScopedOut} scoped out, {pod.World.KeyframesRequested} keyframes requested)");
-
-    foreach (var (channel, inbound) in pod.Inbound)
-    {
-        text.Append(CultureInfo.InvariantCulture, $", {channel} in: {inbound.Duplicates} duplicates {inbound.Late} late {inbound.Held} held");
-        if (inbound.GapSince is { } since)
-        {
-            text.Append(CultureInfo.InvariantCulture, $" (gap since {since:HH:mm:ss})");
-        }
-    }
-
-    foreach (var (channel, outbound) in pod.Outbound.Where(o => o.Value.IsReliable))
-    {
-        text.Append(CultureInfo.InvariantCulture, $", {channel} out: {outbound.Resent} resent {outbound.Lost} lost {outbound.Unacked} unacked");
-    }
-
-    if (pod.ServerShutdownCode is { } code)
-    {
-        text.Append(CultureInfo.InvariantCulture, $", closed by the server ({code})");
-    }
-
-    if (pod.Failure != null)
-    {
-        text.Append(CultureInfo.InvariantCulture, $", failed: {pod.Failure}");
-    }
-
-    return text.ToString();
 }
 
 static string RecordingFolder(DateTime started)
@@ -203,4 +127,3 @@ static string RecordingFolder(DateTime started)
     return folder;
 }
 
-static string Seconds(TimeSpan? time) => time is { } t ? $"{t.TotalSeconds:F1} s" : "-";
