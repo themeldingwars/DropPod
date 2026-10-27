@@ -2,6 +2,7 @@ using System.Globalization;
 using DropPod;
 using DropPod.Client;
 using DropPod.Client.Behaviors;
+using DropPod.Client.Invasions;
 using DropPod.Client.Net;
 using DropPod.Client.Recording;
 using DropPod.Client.Web;
@@ -17,6 +18,22 @@ if (options == null)
     Console.WriteLine(Options.Usage);
     return error == null ? 0 : 1;
 }
+
+// drop is an invasion with a single group from the options
+Invasion invasion;
+try
+{
+    invasion = options.Command == "invade"
+        ? Invasion.Load(options.Scenario!)
+        : new Invasion(null, null, null, [new InvasionGroup(options.Pods, options.Behavior, options.Zone)]);
+}
+catch (Exception e) when (e is InvalidDataException or IOException)
+{
+    Console.Error.WriteLine(e.Message);
+    return 1;
+}
+
+var operatorHost = options.Operator ?? invasion.Operator ?? Options.DefaultOperator;
 
 // The first Ctrl+C ramps the pods down, the second closes them all at once
 using var stopping = new CancellationTokenSource();
@@ -35,18 +52,18 @@ Console.CancelKeyPress += (_, e) =>
     }
 };
 
-using var http = RinClient.CreateHttpClient(options.AcceptAnyCertificate);
-var rin = new RinClient(http, options.Operator);
+using var http = RinClient.CreateHttpClient(options.Insecure ?? operatorHost.IsLoopback);
+var rin = new RinClient(http, operatorHost);
 
 try
 {
     var hosts = await rin.CheckAsync(stopping.Token);
-    Console.WriteLine($"Operator {options.Operator}, client API {hosts.ClientapiHost}");
+    Console.WriteLine($"Operator {operatorHost}, client API {hosts.ClientapiHost}");
 
     return options.Command switch
     {
         "seed" => await SeedAsync(rin, options, stopping.Token),
-        "drop" => await DropAsync(rin, options, stopping.Token, abort.Token),
+        "drop" or "invade" => await InvadeAsync(rin, options, invasion, stopping.Token, abort.Token),
         _ => Unknown(options.Command),
     };
 }
@@ -88,23 +105,29 @@ static async Task<int> SeedAsync(RinClient rin, Options options, CancellationTok
     return 0;
 }
 
-static async Task<int> DropAsync(RinClient rin, Options options, CancellationToken stopping, CancellationToken abort)
+static async Task<int> InvadeAsync(RinClient rin, Options options, Invasion invasion, CancellationToken stopping, CancellationToken abort)
 {
     var folder = options.Record ? RecordingFolder(DateTime.UtcNow) : null;
     var pilots = new List<Pilot>();
-    for (var number = options.First; number < options.First + options.Pods; number++)
+    var number = options.First;
+    foreach (var group in invasion.Groups)
     {
-        var name = PodAccounts.CharacterName(number);
-        pilots.Add(new Pilot(name, PodAccounts.Account(number), ClientProtocol.Build1962, () => PodBehaviors.Create(options.Behavior))
+        for (var i = 0; i < group.Pods; i++, number++)
         {
-            Recorder = folder != null ? new PcapngWriter(Path.Combine(folder, $"{name}.pcapng")) : null,
-            Zone = options.Zone,
-        });
+            var name = PodAccounts.CharacterName(number);
+            pilots.Add(new Pilot(name, PodAccounts.Account(number), ClientProtocol.Build1962, () => PodBehaviors.Create(group.Behavior))
+            {
+                Recorder = folder != null ? new PcapngWriter(Path.Combine(folder, $"{name}.pcapng")) : null,
+                Zone = group.Zone,
+            });
+        }
     }
 
+    var ramp = options.Ramp ?? invasion.Ramp ?? Ramp.Default;
+    var hold = options.Hold ?? invasion.Hold ?? Options.DefaultHold;
     try
     {
-        return await Runner.RunAsync(rin, pilots, options.Ramp, options.Duration, stopping, abort) ? 0 : 1;
+        return await Runner.RunAsync(rin, pilots, ramp, hold, stopping, abort) ? 0 : 1;
     }
     finally
     {

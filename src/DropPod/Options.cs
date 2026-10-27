@@ -4,35 +4,42 @@ using DropPod.Client.Invasions;
 
 namespace DropPod;
 
+/// <summary>Null means not given, invade then takes the value from the invasion file.</summary>
 internal sealed record Options(
     string Command,
-    Uri Operator,
+    Uri? Operator,
     int Pods,
     int First,
-    TimeSpan Duration,
-    bool AcceptAnyCertificate,
+    TimeSpan? Hold,
+    bool? Insecure,
     bool Record,
     string Behavior,
-    Ramp Ramp,
-    uint? Zone)
+    Ramp? Ramp,
+    uint? Zone,
+    string? Scenario)
 {
+    public static readonly Uri DefaultOperator = new("https://localhost:5001");
+    public static readonly TimeSpan DefaultHold = TimeSpan.FromSeconds(30);
+
     public const string Usage = """
         droppod <command> [options]
 
         Commands:
           seed               Create the pod accounts and their characters on RIN (safe to run again)
           drop               Drop pods: log in through RIN and stay in the world for a while
+          invade             Drop the groups of an invasion file, e.g. invade --scenario new-eden-200
 
         Options:
           --operator <url>   Operator host, the client's OperatorHost (default https://localhost:5001)
           --pods <n>         Number of pods (default 1)
           --first <n>        Number of the first pod, to split pods across runs (default 1)
-          --seconds <n>      drop: how long to hold once every pod is in the world (default 30)
-          --ramp <n>/s       drop: how fast pods drop and leave again, per second or /m per minute (default 5/s)
+          --seconds <n>      How long to hold once every pod is in the world (default 30)
+          --ramp <n>/s       How fast pods drop and leave again, per second or /m per minute (default 5/s)
           --insecure         Accept any TLS certificate (on by default for localhost)
-          --record           drop: record every pod as a pcapng in runs/<timestamp>
+          --record           Record every pod as a pcapng in runs/<timestamp>
           --zone <id>        drop: move the characters to this zone first, with the zone admin command
           --behavior <name>  drop: what the pods do in the world: idle (default), wander, chat or churn
+          --scenario <name>  invade: invasions/<name>.json or a path, the options above override the file
         """;
 
     public static Options? Parse(string[] args, out string? error)
@@ -44,15 +51,16 @@ internal sealed record Options(
         }
 
         var command = args[0];
-        var operatorHost = new Uri("https://localhost:5001");
+        Uri? operatorHost = null;
         var pods = 1;
         var first = 1;
-        var seconds = 30;
+        TimeSpan? hold = null;
         bool? insecure = null;
         var record = false;
         var behavior = "idle";
-        var ramp = Ramp.Default;
+        Ramp? ramp = null;
         uint? zone = null;
+        string? scenario = null;
 
         for (var i = 1; i < args.Length; i++)
         {
@@ -72,7 +80,7 @@ internal sealed record Options(
                         first = int.Parse(Next(), CultureInfo.InvariantCulture);
                         break;
                     case "--seconds":
-                        seconds = int.Parse(Next(), CultureInfo.InvariantCulture);
+                        hold = TimeSpan.FromSeconds(int.Parse(Next(), CultureInfo.InvariantCulture));
                         break;
                     case "--insecure":
                         insecure = true;
@@ -85,12 +93,13 @@ internal sealed record Options(
                         break;
                     case "--ramp":
                         var text = Next();
-                        if (!Ramp.TryParse(text, out ramp))
+                        if (!Client.Invasions.Ramp.TryParse(text, out var parsed))
                         {
                             error = $"Can't read the ramp {text}, expected e.g. 5/s or 30/m";
                             return null;
                         }
 
+                        ramp = parsed;
                         break;
                     case "--behavior":
                         behavior = Next();
@@ -100,6 +109,9 @@ internal sealed record Options(
                             return null;
                         }
 
+                        break;
+                    case "--scenario":
+                        scenario = Next();
                         break;
                     default:
                         error = $"Unknown option {args[i]}";
@@ -113,7 +125,12 @@ internal sealed record Options(
             }
         }
 
-        var acceptAny = insecure ?? operatorHost.IsLoopback;
-        return new Options(command, operatorHost, pods, first, TimeSpan.FromSeconds(seconds), acceptAny, record, behavior, ramp, zone);
+        if (command == "invade" && scenario == null)
+        {
+            error = "invade needs --scenario";
+            return null;
+        }
+
+        return new Options(command, operatorHost, pods, first, hold, insecure, record, behavior, ramp, zone, scenario);
     }
 }

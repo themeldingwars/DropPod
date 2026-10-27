@@ -1,0 +1,9 @@
+{
+  "ramp": "5/s",
+  "hold": "10m",
+  "groups": [
+    { "pods": 150, "behavior": "wander", "zone": 448 },
+    { "pods": 30, "behavior": "chat", "zone": 448 },
+    { "pods": 20, "behavior": "churn", "zone": 448 }
+  ]
+}
