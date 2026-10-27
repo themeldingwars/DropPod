@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using DropPod;
 using DropPod.Client;
+using DropPod.Client.Behaviors;
 using DropPod.Client.Net;
 using DropPod.Client.Recording;
 using DropPod.Client.Web;
@@ -103,7 +104,11 @@ static async Task<int> DropAsync(RinClient rin, Options options, CancellationTok
                 recorders.Add(recorder);
             }
 
-            var pod = new Pod(name, account, character.CharacterGuid, ClientProtocol.Build1962) { Recorder = recorder };
+            var pod = new Pod(name, account, character.CharacterGuid, ClientProtocol.Build1962)
+            {
+                Recorder = recorder,
+                Behavior = PodBehaviors.Create(options.Behavior),
+            };
             pod.Log += (p, message) => Console.WriteLine($"[{p.Name}] {message}");
             pods.Add(pod);
 

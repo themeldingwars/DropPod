@@ -8,7 +8,9 @@ using AeroMessages.GSS.Character;
 using AeroMessages.GSS.Character.Command;
 using AeroMessages.GSS.Character.Event;
 using AeroMessages.GSS.Generic;
+using AeroMessages.Common;
 using AeroMessages.Matrix;
+using DropPod.Client.Behaviors;
 using DropPod.Client.Net;
 using DropPod.Client.Recording;
 using DropPod.Client.Web;
@@ -33,7 +35,10 @@ public enum PodState
 /// </summary>
 public sealed class Pod : IAsyncDisposable
 {
-    private const short StandingMovementState = 4096; // what the client sent while standing
+    // What the client sent while standing, and while running with movement input
+    private const short StandingMovementState = 0x1000;
+    private const short RunningMovementState = 0x2004;
+    private const sbyte FullForward = 127;
     private const ushort FullJetpack = 25500;
     private const byte InterpolationDelay = 40; // ceil(network.interpolationDelay / 5), the client sent 37 to 44
 
@@ -64,6 +69,9 @@ public sealed class Pod : IAsyncDisposable
     private TimeSpan _lastTimeSyncReceived = TimeSpan.FromDays(-1);
     private DateTime _lastClientStatus;
     private DateTime _nextMovement;
+    private DateTime _lastMovementSent;
+    private Vector3 _velocity;
+    private float _yaw;
     private DateTime _lastKeyframeRequest;
     private long _bytesDown;
     private long _bytesUp;
@@ -96,6 +104,12 @@ public sealed class Pod : IAsyncDisposable
 
     public Vector3? Position { get; private set; }
 
+    /// <summary>Where the server put the character first.</summary>
+    public Vector3? Spawn { get; private set; }
+
+    /// <summary>Starts once the pod is in the world, until then it only does what loading takes.</summary>
+    public IBehavior? Behavior { get; set; }
+
     public long DatagramsSent { get; private set; }
 
     public long DatagramsReceived { get; private set; }
@@ -122,6 +136,28 @@ public sealed class Pod : IAsyncDisposable
     public IReadOnlyDictionary<Channel, OutboundChannel> Outbound => _outbound;
 
     public event Action<Pod, string>? Log;
+
+    /// <summary>Turns towards the target on the ground plane, the pose moves along with every MovementInput.</summary>
+    public void RunTowards(Vector3 target, float speed)
+    {
+        if (Position is not { } position)
+        {
+            return;
+        }
+
+        var direction = new Vector2(target.X - position.X, target.Y - position.Y);
+        if (direction.LengthSquared() < 0.0001f)
+        {
+            Stand();
+            return;
+        }
+
+        direction = Vector2.Normalize(direction);
+        _yaw = Heading.Yaw(direction);
+        _velocity = new Vector3(direction * speed, 0);
+    }
+
+    public void Stand() => _velocity = Vector3.Zero;
 
     public async Task DropAsync(RinClient rin, CancellationToken ct)
     {
@@ -321,6 +357,8 @@ public sealed class Pod : IAsyncDisposable
             if (move.Data.Type == 1)
             {
                 Position = move.Data.Params1.Position;
+                Spawn ??= Position;
+                _velocity = Vector3.Zero;
             }
         }
     }
@@ -367,6 +405,8 @@ public sealed class Pod : IAsyncDisposable
                 _streamingSent = true;
             }
 
+            Behavior?.Tick(this, now);
+
             // Scheduled against a due time, the loop's 15.6 ms timer resolution on Windows would stretch "every 50 ms"
             // to 62 ms otherwise. After a hitch it starts over instead of sending a burst.
             if (now >= _nextMovement)
@@ -403,23 +443,35 @@ public sealed class Pod : IAsyncDisposable
         // Before the ForcedMovement the client doesn't know where it is, PIN also ignores poses until the respawn
         if (Position is { } position)
         {
+            // Capped, so a hitch doesn't teleport the pod
+            var elapsed = _lastMovementSent == default ? 0 : Math.Min(0.25, (now - _lastMovementSent).TotalSeconds);
+            position += _velocity * (float)elapsed;
+            Position = position;
+            _lastMovementSent = now;
+
+            var running = _velocity != Vector3.Zero;
             var onGround = (short)Math.Min(short.MaxValue, (now - _readyAt).TotalMilliseconds);
             var input = new MovementInput
             {
                 ShortTime = shortTime,
                 HorizontalInput = 0,
-                VerticalInput = 0,
+                VerticalInput = running ? FullForward : (sbyte)0,
                 HeadingPitch = default,
-                HeadingYaw = default,
+                HeadingYaw = new HalfFloat { Value = Heading.Half(_yaw) },
                 InputFlags = 0,
                 PoseData = new MovementPoseData
                 {
                     ShortTime = shortTime,
                     MovementType = MovementDataType.PosRotState | MovementDataType.Aim,
                     WaterLevelAndDesc = 0,
-                    PosRotState = new MovementPosRotState { Pos = position, Rot = Quaternion.Identity, MovementState = StandingMovementState },
-                    Velocity = Vector3.Zero,
-                    Aim = Vector3.UnitX,
+                    PosRotState = new MovementPosRotState
+                    {
+                        Pos = position,
+                        Rot = Heading.Rotation(_yaw),
+                        MovementState = running ? RunningMovementState : StandingMovementState,
+                    },
+                    Velocity = _velocity,
+                    Aim = Heading.Forward(_yaw),
                     JetpackEnergy = FullJetpack,
                     GroundTimePositiveAirTimeNegative = onGround,
                     TimeSinceLastJump = onGround,

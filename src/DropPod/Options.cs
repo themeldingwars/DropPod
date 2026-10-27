@@ -1,4 +1,5 @@
 using System.Globalization;
+using DropPod.Client.Behaviors;
 
 namespace DropPod;
 
@@ -9,7 +10,8 @@ internal sealed record Options(
     int First,
     TimeSpan Duration,
     bool AcceptAnyCertificate,
-    bool Record)
+    bool Record,
+    string Behavior)
 {
     public const string Usage = """
         droppod <command> [options]
@@ -25,6 +27,7 @@ internal sealed record Options(
           --seconds <n>      How long dropped pods stay connected (default 30)
           --insecure         Accept any TLS certificate (on by default for localhost)
           --record           drop: record every pod as a pcapng in runs/<timestamp>
+          --behavior <name>  drop: what the pods do in the world: idle (default) or wander
         """;
 
     public static Options? Parse(string[] args, out string? error)
@@ -42,6 +45,7 @@ internal sealed record Options(
         var seconds = 30;
         bool? insecure = null;
         var record = false;
+        var behavior = "idle";
 
         for (var i = 1; i < args.Length; i++)
         {
@@ -69,6 +73,15 @@ internal sealed record Options(
                     case "--record":
                         record = true;
                         break;
+                    case "--behavior":
+                        behavior = Next();
+                        if (!PodBehaviors.IsKnown(behavior))
+                        {
+                            error = $"Unknown behavior {behavior}, expected one of {string.Join(", ", PodBehaviors.Names)}";
+                            return null;
+                        }
+
+                        break;
                     default:
                         error = $"Unknown option {args[i]}";
                         return null;
@@ -82,6 +95,6 @@ internal sealed record Options(
         }
 
         var acceptAny = insecure ?? operatorHost.IsLoopback;
-        return new Options(command, operatorHost, pods, first, TimeSpan.FromSeconds(seconds), acceptAny, record);
+        return new Options(command, operatorHost, pods, first, TimeSpan.FromSeconds(seconds), acceptAny, record, behavior);
     }
 }
