@@ -34,7 +34,7 @@ droppod drop --pods 10 --behavior wander --zone 448 --seconds 600
 
 Logs the pods in, lets them enter the zone and keeps them in the world. Whatever they do, they send what the 1962 client sent: movement and update requests 20 times a second, a status every second and a time sync every 2 seconds.
 
-The pods drop at `--ramp` (5 per second by default). Once every pod is in the world, they hold for `--seconds`, then leave again at the same pace, the last one first. Ctrl+C skips straight to leaving, a second Ctrl+C closes every pod at once.
+The pods drop at `--ramp` (5 per second by default). Once every pod is in the world, they hold for `--seconds`, then leave again at the same pace, the last one first. Ctrl+C closes every pod at once, a second Ctrl+C ends DropPod right away.
 
 What the pods do in the world, with `--behavior`:
 

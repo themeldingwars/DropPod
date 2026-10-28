@@ -35,21 +35,22 @@ catch (Exception e) when (e is InvalidDataException or IOException)
 
 var operatorHost = options.Operator ?? invasion.Operator ?? Options.DefaultOperator;
 
-// The first Ctrl+C ramps the pods down, the second closes them all at once
+// Ctrl+C closes every pod at once, the ramp down is only for a run that ends on its own. Hosts like Aspire kill the
+// process a few seconds after their Ctrl+C, too early for a ramp down. A second Ctrl+C ends the process, in case closing
+// hangs.
 using var stopping = new CancellationTokenSource();
 using var abort = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
-    e.Cancel = true;
     if (stopping.IsCancellationRequested)
     {
-        abort.Cancel();
+        return;
     }
-    else
-    {
-        Console.WriteLine("Stopping, press Ctrl+C again to close every pod at once");
-        stopping.Cancel();
-    }
+
+    e.Cancel = true;
+    Console.WriteLine("Stopping, closing every pod");
+    stopping.Cancel();
+    abort.Cancel();
 };
 
 using var http = RinClient.CreateHttpClient(options.Insecure ?? operatorHost.IsLoopback);
