@@ -1,10 +1,11 @@
 using System.Buffers.Binary;
+using Aero.Gen;
+using AeroMessages.Control;
 
 namespace DropPod.Client.Net;
 
 /// <summary>
-/// Acks and CloseConnection carry big-endian numbers, the time sync a little-endian one, so they're written by hand
-/// instead of through Aero.
+/// The message id byte, then the Aero-packed message. Control ids are the same in every protocol version.
 /// </summary>
 public static class ControlMessages
 {
@@ -24,16 +25,16 @@ public static class ControlMessages
     public static byte[] Ack(Channel channel, ushort nextExpected, IReadOnlyList<ushort>? pastGap = null)
     {
         pastGap ??= [];
-        var payload = new byte[5 + (pastGap.Count * 2)];
-        payload[0] = channel == Channel.Matrix ? MatrixAck : GssAck;
-        BinaryPrimitives.WriteUInt16BigEndian(payload.AsSpan(1), nextExpected);
-        BinaryPrimitives.WriteUInt16BigEndian(payload.AsSpan(3), unchecked((ushort)(nextExpected - 1)));
+        var additionalAcks = new byte[pastGap.Count * 2];
         for (var i = 0; i < pastGap.Count; i++)
         {
-            BinaryPrimitives.WriteUInt16BigEndian(payload.AsSpan(5 + (i * 2)), pastGap[i]);
+            BinaryPrimitives.WriteUInt16BigEndian(additionalAcks.AsSpan(i * 2), pastGap[i]);
         }
 
-        return payload;
+        var ackForNum = unchecked((ushort)(nextExpected - 1));
+        return channel == Channel.Matrix
+                   ? Encode(MatrixAck, new AeroMessages.Control.MatrixAck { NextSeqNum = nextExpected, AckForNum = ackForNum, AdditionalAcks = additionalAcks })
+                   : Encode(GssAck, new GSSAck { NextSeqNum = nextExpected, AckForNum = ackForNum, AdditionalAcks = additionalAcks });
     }
 
     public static bool TryReadAck(ReadOnlySpan<byte> payload, out Channel channel, out ushort ackedSequence)
@@ -45,8 +46,17 @@ public static class ControlMessages
             return false;
         }
 
-        channel = payload[0] == MatrixAck ? Channel.Matrix : Channel.ReliableGss;
-        ackedSequence = BinaryPrimitives.ReadUInt16BigEndian(payload[3..]);
+        if (payload[0] == MatrixAck)
+        {
+            channel = Channel.Matrix;
+            ackedSequence = Decode<AeroMessages.Control.MatrixAck>(payload).AckForNum;
+        }
+        else
+        {
+            channel = Channel.ReliableGss;
+            ackedSequence = Decode<GSSAck>(payload).AckForNum;
+        }
+
         return true;
     }
 
@@ -59,7 +69,7 @@ public static class ControlMessages
     }
 
     /// <summary>Without a code or reason, what a client sends when it logs out.</summary>
-    public static byte[] Close() => [CloseConnection, 0, 0, 0, 0];
+    public static byte[] Close() => Encode(CloseConnection, new AeroMessages.Control.CloseConnection());
 
     /// <summary>
     /// The client's answer to the server's CloseConnection (GameSocket_SendClose): the server's code and reason text
@@ -67,16 +77,16 @@ public static class ControlMessages
     /// </summary>
     public static byte[] CloseReply(ReadOnlySpan<byte> serverClose)
     {
-        var code = new byte[] { 0, 0, 0, 0 };
+        var code = 0u;
         var text = ReadOnlySpan<byte>.Empty;
         if (serverClose.Length >= 5)
         {
-            code = serverClose.Slice(1, 4).ToArray();
+            code = BinaryPrimitives.ReadUInt32BigEndian(serverClose[1..]);
             text = serverClose[5..];
         }
         else if (serverClose.Length > 1)
         {
-            code = [0xff, 0xff, 0xff, 0xff];
+            code = 0xffffffff;
             text = serverClose[1..];
         }
 
@@ -87,7 +97,7 @@ public static class ControlMessages
             text = text[..end];
         }
 
-        return [CloseConnection, .. code, .. text];
+        return Encode(CloseConnection, new AeroMessages.Control.CloseConnection { ShutdownCode = code, Reason = text.ToArray() });
     }
 
     public static bool TryReadClose(ReadOnlySpan<byte> payload, out uint shutdownCode)
@@ -100,9 +110,25 @@ public static class ControlMessages
 
         if (payload.Length >= 5)
         {
-            shutdownCode = BinaryPrimitives.ReadUInt32BigEndian(payload[1..]);
+            shutdownCode = Decode<AeroMessages.Control.CloseConnection>(payload).ShutdownCode;
         }
 
         return true;
+    }
+
+    private static byte[] Encode(byte messageId, IAero message)
+    {
+        var payload = new byte[1 + message.GetPackedSize()];
+        payload[0] = messageId;
+        message.Pack(payload.AsSpan(1));
+        return payload;
+    }
+
+    private static T Decode<T>(ReadOnlySpan<byte> payload)
+        where T : IAero, new()
+    {
+        var message = new T();
+        message.Unpack(payload[1..]);
+        return message;
     }
 }
