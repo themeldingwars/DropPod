@@ -35,6 +35,20 @@ public sealed class ControlMessagesTests
     }
 
     [TestMethod]
+    public void ReadsTheMatrixAck()
+    {
+        Assert.IsTrue(ControlMessages.TryReadAck(Convert.FromHexString("02CA05CA04"), out var channel, out var sequence));
+        Assert.AreEqual(Channel.Matrix, channel);
+        Assert.AreEqual((ushort)0xca04, sequence);
+    }
+
+    [TestMethod]
+    public void ClosesWithoutACode()
+    {
+        CollectionAssert.AreEqual(Convert.FromHexString("0000000000"), ControlMessages.Close());
+    }
+
+    [TestMethod]
     public void ReadsTheShutdownCode()
     {
         Assert.IsTrue(ControlMessages.TryReadClose(Convert.FromHexString("0000000007"), out var code));
